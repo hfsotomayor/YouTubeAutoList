@@ -1,6 +1,9 @@
 # Mis exec
 .DS_Store
 *.env
+video_history.json
+*secret*.json
+*SECRET*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
