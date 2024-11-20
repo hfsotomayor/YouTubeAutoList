@@ -7,6 +7,11 @@ from googleapiclient.errors import HttpError
 from datetime import datetime, timedelta
 import logging
 import re
+from colorama import Fore, Style, init
+
+# Inicializar colorama
+init(autoreset=True)
+
 
 # Definir los alcances necesarios para la API de YouTube
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
@@ -18,6 +23,20 @@ logging.basicConfig(
     filename="youtube_manager.log"
 )
 
+HISTORY_FILE = "video_history.json"
+
+def load_history():
+    """Carga el historial desde un archivo JSON."""
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    return {}
+
+def save_history(history):
+    """Guarda el historial en un archivo JSON."""
+    with open(HISTORY_FILE, "w", encoding="utf-8") as file:
+        json.dump(history, file, indent=4)
+
 def check_internet_connection():
     """
     Verifica si hay conexión a Internet haciendo una solicitud a Google.
@@ -26,10 +45,10 @@ def check_internet_connection():
     try:
         response = requests.get("https://www.google.com", timeout=5)
         if response.status_code == 200:
-            print("Conexión a Internet verificada")
+            print(f"Conexión a Internet {Fore.GREEN}verificada")
             return True
     except requests.ConnectionError:
-        print("No se detectó conexión a Internet")
+        print(f"{Fore.RED}No se detectó conexión a Internet")
         return False
     return False
 
@@ -62,13 +81,13 @@ def check_channel_exists(youtube, channel_id):
             id=channel_id
         ).execute()
         if response.get("items"):
-            print(f"El canal {channel_id} existe")
+            print(f"El canal {channel_id} {Fore.GREEN}existe")
             return True
         else:
-            print(f"El canal {channel_id} no existe")
+            print(f"El canal {channel_id} {Fore.RED}no existe")
             return False
     except HttpError as e:
-        print(f"Error al verificar el canal {channel_id}: {e}")
+        print(f"{Fore.RED}Error al verificar el canal {channel_id}: {e}")
         logging.error(f"Error al verificar el canal {channel_id}: {e}")
         return False
 
@@ -79,7 +98,7 @@ def is_valid_duration(duration, min_duration, max_duration):
     print(f"=== Verificando duración del video ===")
     match = re.match(r'PT(\d+H)?(\d+M)?(\d+S)?', duration)
     if not match:
-        print("Formato de duración inválido")
+        print("Formato de duración {Fore.RED}inválido")
         return False
 
     # Convertir duración a segundos
@@ -93,19 +112,47 @@ def is_valid_duration(duration, min_duration, max_duration):
     print(f"¿Duración válida? {is_valid}")
     return is_valid
 
-def process_channel(youtube, channel_id, playlist_id, title_pattern, min_duration, max_duration, days_limit=7):
+def delete_watched_videos(youtube, playlist_id):
+    """
+    Elimina videos de una playlist si tienen más del 90% de vistas.
+    """
+    print("=== Eliminando videos con más del 90% vistos ===")
+    try:
+        playlist_items = youtube.playlistItems().list(
+            part="id,snippet,contentDetails",
+            playlistId=playlist_id,
+            maxResults=50
+        ).execute()
+
+        for item in playlist_items.get("items", []):
+            video_id = item["contentDetails"]["videoId"]
+            watch_response = youtube.videos().list(
+                part="statistics",
+                id=video_id
+            ).execute()
+
+            for video in watch_response.get("items", []):
+                view_percentage = float(video["statistics"].get("viewCount", 0)) / 100
+                if view_percentage > 90:
+                    print(f"Eliminando video {video_id} (visto más del 90%)")
+                    youtube.playlistItems().delete(id=item["id"]).execute()
+
+    except HttpError as e:
+        print(f"Error al eliminar videos vistos: {e}")
+        logging.error(f"Error al eliminar videos vistos: {e}")
+
+def process_channel(youtube, channel_id, playlist_id, title_pattern, min_duration, max_duration, hours_limit, history):
     """
     Procesa un canal de YouTube y agrega videos a una playlist si cumplen los criterios.
     """
     print(f"=== Procesando canal {channel_id} ===")
     try:
-        # Verificar existencia del canal
         if not check_channel_exists(youtube, channel_id):
-            print("\033 Canal {channel_id} no existe. Saltando...")
+            print(f"Canal no existe. {Fore.RED}Saltando...")
             return
 
         # Fecha límite para la búsqueda
-        date_limit = (datetime.utcnow() - timedelta(days=days_limit)).isoformat() + "Z"
+        date_limit = (datetime.utcnow() - timedelta(hours=hours_limit)).isoformat() + "Z"
         print(f"Buscando videos publicados después de: {date_limit}")
 
         # Buscar videos en el canal
@@ -119,36 +166,34 @@ def process_channel(youtube, channel_id, playlist_id, title_pattern, min_duratio
         ).execute()
 
         video_ids = [item["id"]["videoId"] for item in search_response.get("items", [])]
-        print(f"Videos encontrados: {len(video_ids)}")
+        print(f"Videos encontrados: {Fore.YELLOW}{len(video_ids)}")
 
-        if not video_ids:
-            print("No se encontraron videos nuevos")
-            return
-
-        # Obtener detalles de los videos
-        video_response = youtube.videos().list(
-            id=",".join(video_ids),
-            part="contentDetails,snippet"
-        ).execute()
-
-        # Procesar cada video
-        for video in video_response.get("items", []):
-            video_id = video["id"]
-            title = video["snippet"]["title"]
-            duration = video["contentDetails"]["duration"]
-
-            print(f"Procesando video: {title} (ID: {video_id}, Duración: {duration})")
-
-            # Verificar título y duración
-            if not re.match(title_pattern, title):
-                print("\033 Título no coincide con el patrón. Saltando...")
-                continue
-            if not is_valid_duration(duration, min_duration, max_duration):
-                print("\033 Duración no válida. Saltando...")
+        for video_id in video_ids:
+            if video_id in history:
+                print(f"Video {video_id} ya procesado. {Fore.RED}Saltando...")
                 continue
 
-            # Agregar video a la playlist
-            add_video_to_playlist(youtube, playlist_id, video_id)
+            video_response = youtube.videos().list(
+                id=video_id,
+                part="contentDetails,snippet"
+            ).execute()
+
+            for video in video_response.get("items", []):
+                title = video["snippet"]["title"]
+                duration = video["contentDetails"]["duration"]
+
+                print(f"Procesando video: {title} (ID: {video_id}, Duración: {duration})")
+
+                if not re.match(title_pattern, title):
+                    print(f"Título no coincide con el patrón. {Fore.RED}Saltando...")
+                    continue
+                if not is_valid_duration(duration, min_duration, max_duration):
+                    print(f"Duración no válida. {Fore.RED}Saltando...")
+                    continue
+
+                add_video_to_playlist(youtube, playlist_id, video_id)
+                history[video_id] = True
+                save_history(history)
 
     except HttpError as e:
         print(f"Error al procesar el canal {channel_id}: {e}")
@@ -172,7 +217,7 @@ def add_video_to_playlist(youtube, playlist_id, video_id):
                 }
             }
         ).execute()
-        print(f"\033 Video {video_id} agregado con éxito")
+        print(f"Video {video_id} agregado con {Fore.GREEN}éxito")
     except HttpError as e:
         print(f"Error al agregar video {video_id}: {e}")
         logging.error(f"Error al agregar video {video_id}: {e}")
@@ -183,39 +228,28 @@ def main():
     """
     print("=== Iniciando programa ===")
 
-    # Verificar conexión a Internet
     if not check_internet_connection():
         print("No hay conexión a Internet. Saliendo...")
         return
 
-    # Autenticación mediante OAuth 2.0
     youtube = authenticate()
+    history = load_history()
 
-    # Configuración de canales
-    channel_configs = [
-        {
-            "channel_id": "UC7QZIf0dta-XPXsp9Hv4dTw",  # RTVE Noticias
-            "title_pattern": r'Las noticias del (\w+) (\d{1,2}) de (\w+) en 10 minutos | RTVE Noticias',
-            "min_duration": 500,
-            "max_duration": 660,
-            "days_limit": 1
-        }
-    ]
+    with open("config.json", "r", encoding="utf-8") as config_file:
+        channel_configs = json.load(config_file)
 
-    # Playlist de destino
-    playlist_id = "PLwFfNCxuxPv1S0Laim0gk3WOXJvLesNi0"
-
-    # Procesar cada canal
-    for config in channel_configs:
+    for config in channel_configs["channels"]:
         process_channel(
             youtube,
             config["channel_id"],
-            playlist_id,
+            channel_configs["playlist_id"],
             config["title_pattern"],
             config["min_duration"],
             config["max_duration"],
-            config["hours_limit"]
+            config["hours_limit"],
+            history
         )
+        delete_watched_videos(youtube, channel_configs["playlist_id"])
 
     print("=== Programa finalizado ===")
 

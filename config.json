@@ -1,0 +1,40 @@
+{
+    "playlist_id": "PLwFfNCxuxPv1S0Laim0gk3WOXJvLesNi0",
+    "channels": [
+        {
+            "channel_id": "UC7QZIf0dta-XPXsp9Hv4dTw",
+            "title_pattern": "Las noticias del (\\w+) (\\d{1,2}) de (\\w+) en 10 minutos | RTVE Noticias",
+            "min_duration": 500,
+            "max_duration": 660,
+            "hours_limit": 24
+        },
+        {
+            "channel_id": "UCch5At0S1Q-qqCM3iilFI5w",
+            "title_pattern": "([a-zA-Z0-9_-]+)",
+            "min_duration": 300,
+            "max_duration": 13000,
+            "hours_limit": 24
+        },
+        {
+            "channel_id": "UCuCeO7D60_urvIFmaax22NQ",
+            "title_pattern": "([a-zA-Z0-9_-]+)",
+            "min_duration": 600,
+            "max_duration": 18800,
+            "hours_limit": 24
+        },
+        {
+            "channel_id": "UC9n5BQmNLHGlbHSZoGXLPdQ",
+            "title_pattern": "([a-zA-Z0-9_-]+)",
+            "min_duration": 600,
+            "max_duration": 2000,
+            "hours_limit": 24
+        },
+        {
+            "channel_id": "UCCSbOixo2xpZc_oToqeq2jQ",
+            "title_pattern": "Conferencia de prensa \\| \\d{2}\\.\\d{2}\\.\\d{2}",
+            "min_duration": 300,
+            "max_duration": 20000,
+            "hours_limit": 48
+        }
+    ]
+}
