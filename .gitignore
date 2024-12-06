@@ -1,9 +1,28 @@
 # Mis exec
+*.xlsx
 .DS_Store
 *.env
-video_history.json
+*config*
+youtubeautolist-f*.json
+*history*.json
+*HISTORY*.json
+*cache*.json
+*CACHE*.json
+*cache*.okl
+*CACHE*.pkl
+config.json
+*token*.json
+*TOKEN*.json
 *secret*.json
 *SECRET*.json
+CanalesDuda.json
+grouped_channelsFirst50.json
+grouped_channels.json
+ChannelList.py
+*prueb*.py
+*PRUEB*.py
+main2.py
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
