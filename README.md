@@ -1,80 +1,111 @@
 # YouTubeAutoList
 
-## Genera una lista automáticamente
+Automatización para crear y mantener listas de reproducción de YouTube basadas en canales específicos y criterios configurables.
 
-### Diagrama de flujo
+## Características
 
-```mermaid
-flowchart TD
-    A[Inicio] --> B{Verificar Internet}
-    B -->|No| End[Fin]
-    B -->|Sí| C[Autenticar OAuth]
+- Autenticación OAuth 2.0 con YouTube API
+- Sistema de caché para optimizar las consultas a la API
+- Filtrado de videos por duración y patrones en títulos
+- Detección y exclusión automática de Shorts
+- Limpieza automática de videos antiguos
+- Soporte para múltiples canales y listas de reproducción
+- Sistema de logging con colores
+- Contenedorización con Docker
 
-    C --> D[Cargar JSONs y Cache]
-    D --> E[Cargar Configuración]
+## Requisitos
 
-    E --> F[Procesar Canales]
-    F --> G[Verificar Validez Cache]
+- Python 3.11+
+- Credenciales de YouTube API
+- Docker (opcional)
 
-    G -->|Caducado| H[Actualizar Timestamp]
-    G -->|Válido| I[Obtener Videos Recientes]
-
-    I --> J{Por cada video}
-
-    J --> K{¿En Historial?}
-    K -->|Sí| J
-    K -->|No| L[Obtener Progreso]
-
-    L --> M{Verificar Criterios}
-    M --> N{Progreso > Umbral}
-    N -->|Sí| J
-    N -->|No| O{Verificar Duración}
-
-    O -->|Inválida| J
-    O -->|Válida| P{Verificar Título}
-
-    P -->|No Coincide| J
-    P -->|Coincide| Q[Agregar a Playlist]
-
-    Q --> R[Actualizar Historial]
-    R --> J
-
-    J --> S{¿Más Canales?}
-    S -->|Sí| F
-    S -->|No| End
+## Estructura
 
 ```
+YouTubeAutoList/
+├── YouTubeAutoList.py     # Script principal
+├── config/                # Directorio de configuración
+│   ├── YouTubeAutoListConfig.json
+│   └── YouTubeAutoListToken.json
+├── data/                  # Directorio de datos
+├── logs/                  # Directorio de logs
+├── Dockerfile
+├── docker-compose.yml
+├── entrypoint.sh
+└── requirements.txt
+```
 
-### Archivo de configuracion
+## Configuración
 
-'''json
+### Archivo YouTubeAutoListConfig.json
+
+```json
 {
-"playlist*id": "ID Lista",
-"channels": [
-{
-"channel_id": "ID Canal",
-"channel_name": "Nombre Canal",
-"title_pattern": "([a-zA-Z0-9*-]+)",
-"min*duration": 120,
-"max_duration": 900,
-"hours_limit": 6
-},
-{
-"channel_id": "ID Canal",
-"channel_name": "Nombre Canal",
-"title_pattern": "([a-zA-Z0-9*-]+)",
-"min*duration": 120,
-"max_duration": 900,
-"hours_limit": 6
-},
-{
-"channel_id": "UCuCeID Canal",
-"channel_name": "Nombre Canal",
-"title_pattern": "([a-zA-Z0-9*-]+)",
-"min_duration": 120,
-"max_duration": 900,
-"hours_limit": 6
-},
-]
+    "channels": [
+        {
+            "channel_id": "ID_CANAL",
+            "channel_name": "Nombre Canal",
+            "playlist_id": "ID_PLAYLIST",
+            "playlist_name": "Nombre Playlist",
+            "title_pattern": "regex_pattern",
+            "min_duration": 120,
+            "max_duration": 900,
+            "hours_limit": 8
+        }
+    ]
 }
-'''
+```
+
+### Variables de Entorno Docker
+
+```yaml
+environment:
+  - TZ=Europe/Madrid
+  - CONFIG_DIR=/app/config
+  - LOG_DIR=/app/logs
+  - DATA_DIR=/app/data
+```
+
+## Uso
+
+### Local
+
+1. Instalar dependencias:
+```bash
+pip install -r requirements.txt
+```
+
+2. Ejecutar:
+```bash
+python YouTubeAutoList.py
+```
+
+### Docker
+
+1. Construir imagen:
+```bash
+docker compose build
+```
+
+2. Ejecutar:
+```bash
+docker compose up -d
+```
+
+## Logging
+
+Los logs se guardan en:
+- `logs/YouTubeAutoList.log`: Logs de la aplicación
+- `logs/cron.log`: Logs de las ejecuciones programadas
+
+## Contribuir
+
+1. Fork del repositorio
+2. Crear rama feature (`git checkout -b feature/NuevaCaracteristica`)
+3. Commit cambios (`git commit -am 'Añadir nueva característica'`)
+4. Push a la rama (`git push origin feature/NuevaCaracteristica`)
+5. Crear Pull Request
+
+## Licencia
+
+MIT

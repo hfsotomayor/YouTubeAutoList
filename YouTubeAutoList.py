@@ -3,17 +3,19 @@ import json
 import logging
 import time
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 from googleapiclient.errors import HttpError
 from typing import Dict, List, Optional, Any
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.oauth2.credentials import Credentials
-from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from colorama import init, Fore
 import pickle
+from dateutil import parser
+from dateutil.relativedelta import relativedelta
+import pytz
 
 # Inicialización de colorama para soporte de colores en consola
 init()
@@ -37,6 +39,10 @@ class YouTubeCache:
     def __init__(self):
         self.cache = self._load_cache()
         self.last_update = {}
+        self.cache_duration = {
+            'videos': 3600,  # 1 hora para videos
+            'playlists': 7200  # 2 horas para playlists
+        }
 
     def _load_cache(self) -> Dict:
         """Carga el caché desde el archivo o crea uno nuevo si no existe."""
@@ -85,6 +91,14 @@ class YouTubeCache:
         self.last_update[key] = time.time()
         self.save_cache()
 
+    def is_cache_valid(self, key: str, cache_type: str) -> bool:
+        """Verifica si el caché aún es válido"""
+        if key not in self.last_update:
+            return False
+
+        elapsed = time.time() - self.last_update[key]
+        return elapsed < self.cache_duration[cache_type]
+
 
 class YouTubeManager:
     """Gestiona todas las operaciones con la API de YouTube."""
@@ -92,6 +106,8 @@ class YouTubeManager:
     def __init__(self):
         self.youtube = None
         self.cache = YouTubeCache()
+        self.video_cache = {}  # Cache para almacenar información de videos
+        self.playlist_cache = {}  # Cache para almacenar información de playlists
         self._setup_logging()
 
     def _setup_logging(self):
@@ -131,153 +147,97 @@ class YouTubeManager:
         return False
 
     def authenticate(self):
-        """
-        Realiza la autenticación OAuth 2.0 con manejo de refresco de token.
-        Diseñado para entornos sin interacción humana (contenedores, scripts automáticos).
-        """
-        self.log_and_print("=== Iniciando autenticación OAuth 2.0 ===", Fore.YELLOW)
+        """Autenticación usando archivo de token o flujo interactivo"""
+        self.log_and_print(
+            "=== Iniciando autenticación OAuth 2.0 ===", Fore.YELLOW)
         try:
-            # Intentar cargar credenciales existentes
-            creds = None
-            # Verificar si existe un token guardado
+            # Intentar cargar token existente
             if os.path.exists('YouTubeAutoListToken.json'):
-                try:
-                    creds = Credentials.from_authorized_user_file(
-                        'YouTubeAutoListToken.json',
-                        SCOPES
-                    )
-                except Exception as load_error:
+                creds = Credentials.from_authorized_user_file(
+                    'YouTubeAutoListToken.json', SCOPES)
+                if not creds.expired:
+                    self.youtube = build('youtube', 'v3', credentials=creds)
                     self.log_and_print(
-                        f"Error al cargar credenciales existentes: {str(load_error)}",
-                        Fore.RED
-                    )
-                    creds = None
-
-            # Verificar si el token necesita ser actualizado
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    # Intentar refrescar el token
+                        "Autenticación exitosa usando token existente", Fore.GREEN)
+                    return
+                if creds.refresh_token:
                     creds.refresh(Request())
-                except Exception as refresh_error:
+                    self.youtube = build('youtube', 'v3', credentials=creds)
+                    # Guardar token actualizado
+                    with open('YouTubeAutoListToken.json', 'w') as token:
+                        token.write(creds.to_json())
                     self.log_and_print(
-                        f"Error al refrescar el token: {str(refresh_error)}",
-                        Fore.RED
-                    )
-                    creds = None
+                        "Token refrescado exitosamente", Fore.GREEN)
+                    return
 
-            # Si no hay credenciales válidas, usar credenciales de servicio
-            if not creds:
-                try:
-                    # Usar Service Account para autenticación sin interacción
-                    creds = service_account.Credentials.from_service_account_file(
-                        'youtubeautolist-ff36f334dab3.json',  # Archivo de credenciales de cuenta de servicio
-                        scopes=SCOPES
-                    )
-                except FileNotFoundError:
-                    # Generar un nuevo token usando flujo de autorización
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        'YouTubeAutoListClientSecret.json',
-                        SCOPES
-                    )
-                    # Usar el flujo de autorización sin interacción (offline access)
-                    creds = flow.run_console()
+            # Si no hay token, hacer autenticación interactiva una vez
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'YouTubeAutoListClientSecret.json', SCOPES)
+            creds = flow.run_local_server(port=8080)
 
-                # Guardar las credenciales actualizadas
-                with open('YouTubeAutoListToken.json', 'w') as token:
-                    # Serializar las credenciales de manera compatible
-                    token_data = {
-                        'token': getattr(creds, 'token', None),
-                        'refresh_token': getattr(creds, 'refresh_token', None),
-                        'token_uri': getattr(creds, 'token_uri', None),
-                        'client_id': getattr(creds, 'client_id', None),
-                        'client_secret': getattr(creds, 'client_secret', None),
-                        'scopes': list(SCOPES)
-                    }
-                    json.dump({k: v for k, v in token_data.items() if v is not None}, token, indent=4)
+            # Guardar token para futuras ejecuciones
+            with open('YouTubeAutoListToken.json', 'w') as token:
+                token.write(creds.to_json())
 
-            # Crear el cliente de YouTube
             self.youtube = build('youtube', 'v3', credentials=creds)
-            self.log_and_print("Autenticación exitosa", Fore.GREEN)
+            self.log_and_print("Nueva autenticación exitosa", Fore.GREEN)
 
+            return True
         except Exception as e:
             self.log_and_print(
-                f"Error crítico en la autenticación: {str(e)}",
-                Fore.RED,
-                logging.ERROR
-            )
+                f"Error en autenticación: {str(e)}", Fore.RED, logging.ERROR)
             raise
 
     def get_channel_videos(self, channel_config: Dict) -> List[Dict]:
-        """
-        Obtiene los videos de un canal que cumplen con los criterios especificados.
+        """Obtiene videos con optimización de cuota"""
+        channel_id = channel_config['channel_id']
 
-        Args:
-            channel_config: Configuración del canal incluyendo patrones y límites
-        """
-        cached_videos = self.cache.get_cached_data(
-            channel_config['channel_id'], 'videos')
-        if cached_videos:
-            self.log_and_print(
-                f"Usando caché para videos del canal: {channel_config['channel_name']}",
-                Fore.GREEN
-            )
-            return cached_videos
+        # Usar caché si es válido
+        if self.cache.is_cache_valid(channel_id, 'videos'):
+            cached_videos = self.cache.get_cached_data(channel_id, 'videos')
+            if cached_videos:
+                return cached_videos
+
+        # Limitar resultados máximos
+        max_results = min(channel_config.get('max_results', 10), 50)
 
         try:
             videos = []
-            # Calcular la fecha límite basada en hours_limit
-            hours_limit = channel_config.get('hours_limit', 4)
-            published_after = (
-                datetime.utcnow() - timedelta(hours=hours_limit)
-            ).isoformat() + 'Z'
-
             request = self.youtube.search().list(
-                part="id,snippet",
-                channelId=channel_config['channel_id'],
-                maxResults=50,
+                part="id",  # Solicitar solo IDs primero
+                channelId=channel_id,
+                maxResults=max_results,
                 order="date",
                 type="video",
-                publishedAfter=published_after
+                publishedAfter=(datetime.utcnow() -
+                                timedelta(hours=channel_config.get(
+                                    'hours_limit', 8))
+                                ).isoformat() + 'Z'
             )
 
-            while request:
-                try:
-                    response = request.execute()
-                except HttpError as e:
-                    # Verificar específicamente el error de cuota
-                    error_details = e.error_details[0] if e.error_details else {
-                    }
-                    if error_details.get('reason') == 'quotaExceeded':
-                        self.log_and_print(
-                            "Cuota de YouTube excedida. Deteniendo operaciones.",
-                            Fore.RED,
-                            logging.ERROR
-                        )
-                        raise QuotaExceededException(
-                            "Se ha excedido la cuota diaria de YouTube")
-                    else:
-                        raise
+            # Obtener IDs primero
+            video_ids = []
+            response = request.execute()
+            for item in response['items']:
+                video_ids.append(item['id']['videoId'])
 
-                for item in response['items']:
-                    video_id = item['id']['videoId']
-                    video_details = self._get_video_details(video_id)
+            # Obtener detalles en una sola llamada
+            if video_ids:
+                details = self.youtube.videos().list(
+                    part="snippet,contentDetails",
+                    id=','.join(video_ids)
+                ).execute()
 
-                    # Aplicar filtros de manera estricta
-                    if self._video_matches_criteria(video_details, channel_config):
-                        videos.append(video_details)
+                for video in details['items']:
+                    if self._video_matches_criteria(video, channel_config):
+                        videos.append(video)
 
-                request = self.youtube.search().list_next(request, response)
-
-            self.cache.update_cache(
-                channel_config['channel_id'], videos, 'videos')
+            self.cache.update_cache(channel_id, videos, 'videos')
             return videos
 
-        except QuotaExceededException:
-            # Propagar la excepción para manejarla en el nivel superior
-            raise
         except Exception as e:
             self.log_and_print(
-                f"Error al obtener videos del canal {channel_config['channel_name']}: {str(e)}",
+                f"Error al obtener videos: {str(e)}",
                 Fore.RED,
                 logging.ERROR
             )
@@ -320,11 +280,7 @@ class YouTubeManager:
 
     def _video_matches_criteria(self, video_details: Dict, channel_config: Dict) -> bool:
         """
-        Verifica si un video cumple con los criterios especificados de manera más estricta.
-
-        Args:
-            video_details: Detalles del video
-            channel_config: Configuración del canal con los criterios
+        Verifica si un video cumple con los criterios especificados.
         """
         try:
             if not video_details or 'snippet' not in video_details:
@@ -332,22 +288,97 @@ class YouTubeManager:
 
             title = video_details['snippet']['title']
 
-            # Verificación del patrón de título
+            # Verificar el patrón del título si está configurado
             title_pattern = channel_config.get('title_pattern')
             if title_pattern:
-                title_match = re.search(title_pattern, title)
-                if not title_match:
+                match = re.search(title_pattern, title, re.IGNORECASE)
+                if not match:
+                    self.log_and_print(
+                        f"Video descartado: '{title}' no coincide con el patrón configurado: {title_pattern}",
+                        Fore.YELLOW
+                    )
+                    return False
+                else:
+                    self.log_and_print(
+                        f"Coincidencia encontrada en título: '{title}' con patrón: {title_pattern}\n"
+                        f"Grupo coincidente: {match.group(0)}",
+                        Fore.CYAN
+                    )
+
+            if 'id' in video_details:
+                video_id = video_details['id']
+                try:
+                    # Obtener detalles completos del video
+                    response = self.youtube.videos().list(
+                        part="snippet,contentDetails,status",
+                        id=video_id
+                    ).execute()
+
+                    if not response['items']:
+                        return False
+
+                    video_info = response['items'][0]
+                    
+                    # 1. Detectar Shorts por múltiples indicadores
+                    is_short = False
+                    
+                    # Verificar en la descripción
+                    description = str(video_info['snippet'].get('description', '')).lower()
+                    if '#shorts' in description or '/shorts/' in description:
+                        is_short = True
+                    
+                    # Verificar en el título
+                    if '#shorts' in title.lower():
+                        is_short = True
+                    
+                    # Verificar duración (los Shorts suelen ser menores a 60 segundos)
+                    duration = self._parse_duration(video_info['contentDetails']['duration'])
+                    if duration <= 60:
+                        is_short = True
+                    
+                    # Verificar proporciones del video (vertical)
+                    if 'contentDetails' in video_info:
+                        default_thumbnail = video_info['snippet']['thumbnails'].get('default', {})
+                        if default_thumbnail:
+                            width = default_thumbnail.get('width', 0)
+                            height = default_thumbnail.get('height', 0)
+                            if height > width:  # Proporción vertical
+                                is_short = True
+
+                    if is_short:
+                        self.log_and_print(
+                            f"Video descartado: '{title}' detectado como Short",
+                            Fore.YELLOW
+                        )
+                        return False
+
+                    # Verificar duración según configuración
+                    min_duration = channel_config.get('min_duration', 0)
+                    max_duration = channel_config.get('max_duration', float('inf'))
+                    
+                    if not (min_duration <= duration <= max_duration):
+                        self.log_and_print(
+                            f"Video descartado: '{title}' duración ({duration}s) fuera de rango",
+                            Fore.YELLOW
+                        )
+                        return False
+
+                    # El video cumple todos los criterios
+                    self.log_and_print(
+                        f"Video aceptado: '{title}'",
+                        Fore.GREEN
+                    )
+                    return True
+
+                except Exception as e:
+                    self.log_and_print(
+                        f"Error al obtener detalles del video: {str(e)}",
+                        Fore.RED,
+                        logging.ERROR
+                    )
                     return False
 
-            # Verificación de duración
-            duration = self._parse_duration(
-                video_details['contentDetails']['duration'])
-            min_duration = channel_config.get('min_duration', 0)
-            max_duration = channel_config.get('max_duration', float('inf'))
-
-            duration_ok = (min_duration <= duration <= max_duration)
-
-            return duration_ok
+            return False
 
         except Exception as e:
             self.log_and_print(
@@ -387,15 +418,34 @@ class YouTubeManager:
         """
         try:
             for channel in config['channels']:
+                # Verificar si el canal tiene playlist_id
+                if not channel.get('playlist_id'):
+                    self.log_and_print(
+                        f"Canal {channel['channel_name']} sin playlist_id configurado. Saltando...",
+                        Fore.RED,
+                        logging.ERROR
+                    )
+                    continue
+
                 self.log_and_print(
-                    f"Procesando canal: {channel['channel_name']}",
+                    f"Procesando canal: {channel['channel_name']} -> Playlist: {channel.get('playlist_name', 'Sin nombre')}",
                     Fore.YELLOW
                 )
 
                 try:
+                    # Obtener videos y playlist_items usando el playlist_id del canal
                     videos = self.get_channel_videos(channel)
+                    current_playlist_items = self._get_playlist_items(
+                        channel['playlist_id'])
+
+                    # Procesar los videos encontrados
+                    for video in videos:
+                        video_id = video['id']
+                        if not self._video_in_playlist(video_id, current_playlist_items):
+                            self._add_to_playlist(
+                                channel['playlist_id'], video_id)
+
                 except QuotaExceededException:
-                    # Si se excede la cuota, detener completamente el proceso
                     self.log_and_print(
                         "Cuota de YouTube excedida. Deteniendo procesamiento de canales.",
                         Fore.RED,
@@ -403,21 +453,12 @@ class YouTubeManager:
                     )
                     break
 
-                current_playlist_items = self._get_playlist_items(
-                    config['playlist_id'])
-
-                for video in videos:
-                    video_id = video['id']
-                    if not self._video_in_playlist(video_id, current_playlist_items):
-                        self._add_to_playlist(config['playlist_id'], video_id)
-
         except Exception as e:
             self.log_and_print(
                 f"Error al gestionar la lista de reproducción: {str(e)}",
                 Fore.RED,
                 logging.ERROR
             )
-            return []
 
     def _video_in_playlist(self, video_id: str, playlist_items: List[Dict]) -> bool:
         """
@@ -504,33 +545,33 @@ class YouTubeManager:
         return None
 
     def load_config(self) -> Dict:
-        """
-        Carga la configuración desde el archivo o crea uno por defecto si no existe.
-
-        Returns:
-            Dict: Configuración cargada
-        """
-        if not os.path.exists(CONFIG_FILE):
-            default_config = {
-                "playlist_id": "",
-                "channels": []
-            }
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(default_config, f, indent=4)
-            self.log_and_print(
-                f"Archivo de configuración creado: {CONFIG_FILE}",
-                Fore.YELLOW
-            )
-            return default_config
-
+        """Carga la configuración desde el archivo con manejo mejorado de errores."""
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-            self.log_and_print(
-                "Configuración cargada correctamente",
-                Fore.GREEN
-            )
-            return config
+            if not os.path.exists(CONFIG_FILE):
+                default_config = {
+                    "channels": []
+                }
+                with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(default_config, f, indent=4, ensure_ascii=False)
+                self.log_and_print(
+                    f"Archivo de configuración creado: {CONFIG_FILE}",
+                    Fore.YELLOW
+                )
+                return default_config
+
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                try:
+                    config = json.load(f)
+                    self.log_and_print(
+                        "Configuración cargada correctamente", Fore.GREEN)
+                    return config
+                except json.JSONDecodeError as e:
+                    self.log_and_print(
+                        f"Error de sintaxis en el archivo de configuración (línea {e.lineno}, columna {e.colno}): {e.msg}",
+                        Fore.RED,
+                        logging.ERROR
+                    )
+                    raise
 
         except Exception as e:
             self.log_and_print(
@@ -538,7 +579,112 @@ class YouTubeManager:
                 Fore.RED,
                 logging.ERROR
             )
-            return {"playlist_id": "", "channels": []}
+            return {"channels": []}
+
+    def cleanup_playlists(self):
+        """Limpia las listas de reproducción según los criterios de tiempo."""
+        try:
+            playlist_limits = {
+                'PLwFfNCxuxPv1S0Laim0gk3WOXJvLesNi0': timedelta(days=2),
+                'PLwFfNCxuxPv0S6EDvvtrpcA86wiVpBvXs': timedelta(days=14)
+            }
+
+            for playlist_id, time_limit in playlist_limits.items():
+                self.log_and_print(
+                    f"=== Iniciando limpieza de playlist {playlist_id} (límite: {time_limit.days} días) ===",
+                    Fore.YELLOW
+                )
+
+                try:
+                    playlist_items = self._get_playlist_items(playlist_id)
+                    
+                    if not playlist_items:
+                        continue
+
+                    videos_eliminados = 0
+                    for item in playlist_items:
+                        try:
+                            # Usar contentDetails.videoPublishedAt para la fecha real de publicación
+                            video_published_at = datetime.strptime(
+                                item['contentDetails']['videoPublishedAt'],
+                                '%Y-%m-%dT%H:%M:%SZ'
+                            )
+                            
+                            # Calcular tiempo desde la publicación original
+                            time_passed = datetime.utcnow() - video_published_at
+                            
+                            # Log mejorado
+                            self.log_and_print(
+                                f"Video: {item['snippet']['title']}\n"
+                                f"  - Fecha publicación original: {video_published_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                f"  - Días desde publicación: {time_passed.days}",
+                                Fore.CYAN
+                            )
+
+                            if time_passed > time_limit:
+                                try:
+                                    self.youtube.playlistItems().delete(
+                                        id=item['id']
+                                    ).execute()
+
+                                    videos_eliminados += 1
+                                    self.log_and_print(
+                                        f"Video {item['snippet']['title']} eliminado por antigüedad "
+                                        f"(días desde publicación: {time_passed.days} > {time_limit.days})",
+                                        Fore.GREEN
+                                    )
+                                    time.sleep(1)
+
+                                except HttpError as e:
+                                    error_details = e.error_details[0] if e.error_details else {}
+                                    if error_details.get('reason') == 'quotaExceeded':
+                                        raise QuotaExceededException(
+                                            "Se ha excedido la cuota diaria de YouTube"
+                                        )
+                                    else:
+                                        self.log_and_print(
+                                            f"Error al eliminar video: {str(e)}",
+                                            Fore.RED,
+                                            logging.ERROR
+                                        )
+
+                        except Exception as e:
+                            self.log_and_print(
+                                f"Error procesando video: {str(e)}",
+                                Fore.RED,
+                                logging.ERROR
+                            )
+                            continue
+
+                    self.log_and_print(
+                        f"=== Limpieza completada para playlist {playlist_id}: {videos_eliminados} videos eliminados ===",
+                        Fore.GREEN
+                    )
+                    self.cache.update_cache(playlist_id, None, 'playlists')
+
+                except QuotaExceededException:
+                    raise
+
+            self.log_and_print(
+                "=== Proceso de limpieza finalizado para todas las playlists ===",
+                Fore.GREEN
+            )
+
+        except Exception as e:
+            self.log_and_print(
+                f"Error en limpieza de playlists: {str(e)}",
+                Fore.RED,
+                logging.ERROR
+            )
+
+
+def log_video_status(status, title, reason, pattern_match=None):
+    if status == "aceptado":
+        print(f"\033[92mVideo {status}: '{title}'\033[0m")
+        print(f"\033[92mCoincide con patrón: {pattern_match}\033[0m")
+    else:
+        print(f"\033[91mVideo {status}: '{title}'\033[0m")
+        print(f"\033[91mRazón: {reason}\033[0m")
 
 
 def main():
@@ -560,16 +706,26 @@ def main():
 
         # Cargar configuración
         config = manager.load_config()
-        if not config['playlist_id'] or not config['channels']:
+        if not config.get('channels'):
             manager.log_and_print(
-                "Configuración incompleta. Verifica el archivo de configuración.",
-                Fore.RED,
-                logging.ERROR
-            )
+                "No hay canales configurados.", Fore.RED, logging.ERROR)
             return
+
+        # Validar playlist_id en cada canal
+        for channel in config['channels']:
+            if not channel.get('playlist_id'):
+                manager.log_and_print(
+                    f"Error: Canal '{channel.get('channel_name')}' no tiene playlist_id.",
+                    Fore.RED,
+                    logging.ERROR
+                )
+                return
 
         # Gestionar la lista de reproducción
         manager.manage_playlist(config)
+
+        # Ejecutar limpieza de playlists después de procesar todos los canales
+        manager.cleanup_playlists()
 
         manager.log_and_print(
             "Proceso completado exitosamente",
@@ -587,3 +743,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# Fin del script
