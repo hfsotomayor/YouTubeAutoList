@@ -1,6 +1,30 @@
 # YouTubeAutoList
 
-Automatización para crear y mantener listas de reproducción de YouTube basadas en canales específicos y criterios configurables.
+Sistema automatizado para gestionar listas de reproducción de YouTube basado en criterios configurables.
+
+## Requisitos Previos
+
+1. Python 3.11 o superior
+2. Docker (opcional)
+3. Cuenta de Google y proyecto en Google Cloud Platform
+
+## Configuración de Google Cloud Platform
+
+1. Crear un nuevo proyecto en [Google Cloud Console](https://console.cloud.google.com/)
+2. Habilitar YouTube Data API v3:
+   - Ir a "APIs & Services" > "Library"
+   - Buscar "YouTube Data API v3"
+   - Clic en "Enable"
+
+3. Configurar credenciales OAuth:
+   - Ir a "APIs & Services" > "Credentials"
+   - Clic en "Create Credentials" > "OAuth client ID"
+   - Seleccionar "Desktop Application"
+   - Configurar pantalla de consentimiento:
+     * Tipo de usuario: Externo
+     * Información de la aplicación
+     * Permisos: `.../auth/youtube.force-ssl`
+   - Descargar el archivo JSON de credenciales y renombrarlo a `YouTubeAutoListClientSecret.json`
 
 ## Características
 
@@ -10,7 +34,6 @@ Automatización para crear y mantener listas de reproducción de YouTube basadas
 - Detección y exclusión automática de Shorts
 - Limpieza automática de videos antiguos
 - Soporte para múltiples canales y listas de reproducción
-- Sistema de logging con colores
 - Contenedorización con Docker
 
 ## Requisitos
@@ -23,16 +46,48 @@ Automatización para crear y mantener listas de reproducción de YouTube basadas
 
 ```
 YouTubeAutoList/
-├── YouTubeAutoList.py     # Script principal
-├── config/                # Directorio de configuración
-│   ├── YouTubeAutoListConfig.json
-│   └── YouTubeAutoListToken.json
-├── data/                  # Directorio de datos
-├── logs/                  # Directorio de logs
-├── Dockerfile
-├── docker-compose.yml
-├── entrypoint.sh
-└── requirements.txt
+├── YouTubeAutoList.py       # Script principal
+├── auth_setup.py           # Script de autenticación inicial
+├── entrypoint.sh          # Punto de entrada para Docker
+├── Dockerfile             # Configuración de Docker
+├── requirements.txt       # Dependencias Python
+├── YouTubeAutoListConfig.json    # Configuración de canales
+├── YouTubeAutoListToken.json     # Token de autenticación
+└── YouTubeAutoListClientSecret.json  # Credenciales de Google Cloud
+```
+
+## Diagrama de Flujo
+
+```mermaid
+graph TD
+    A[main] --> B[YouTubeManager.__init__]
+    B --> C[check_internet_connection]
+    C --> D[authenticate]
+    D --> E[load_config]
+    E --> F[manage_playlist]
+    F --> G[get_channel_videos]
+    G --> H[_video_matches_criteria]
+    H --> I[_parse_duration]
+    F --> J[_get_playlist_items]
+    F --> K[_video_in_playlist]
+    F --> L[_add_to_playlist]
+    A --> M[cleanup_playlists]
+    M --> N[_get_playlist_items]
+    
+    subgraph "Caché"
+        O[YouTubeCache.__init__]
+        P[_load_cache]
+        Q[save_cache]
+        R[get_cached_data]
+        S[update_cache]
+        T[is_cache_valid]
+    end
+
+    subgraph "Autenticación"
+        D --> U[Verificar token existente]
+        U --> V[Cargar credenciales]
+        V --> W[Refrescar token si es necesario]
+    end
 ```
 
 ## Configuración
@@ -80,16 +135,18 @@ pip install -r requirements.txt
 python YouTubeAutoList.py
 ```
 
-### Docker
+### Docker 
+
+# Falta aclar contexto de por que no se usa volumnes y docker compose 
 
 1. Construir imagen:
 ```bash
-docker compose build
+docker build -t owner/youtubeautolist:tag . >> LogsBuild$(date "+%Y%m%d-%H%M%S").txt
 ```
 
 2. Ejecutar:
 ```bash
-docker compose up -d
+docker run -d --name youtubeautolisttag --restart unless-stopped owner/youtubeautolist:tag .
 ```
 
 ## Logging
@@ -105,7 +162,3 @@ Los logs se guardan en:
 3. Commit cambios (`git commit -am 'Añadir nueva característica'`)
 4. Push a la rama (`git push origin feature/NuevaCaracteristica`)
 5. Crear Pull Request
-
-## Licencia
-
-MIT

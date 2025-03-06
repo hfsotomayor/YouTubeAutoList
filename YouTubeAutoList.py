@@ -3,7 +3,7 @@ import json
 import logging
 import time
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import requests
 from googleapiclient.errors import HttpError
 from typing import Dict, List, Optional, Any
@@ -13,18 +13,17 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from colorama import init, Fore
 import pickle
-from dateutil import parser
-from dateutil.relativedelta import relativedelta
-import pytz
 
 # Inicialización de colorama para soporte de colores en consola
 init()
 
 # Configuración de constantes
 SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
-CACHE_FILE = 'YouTubeAutoListCache.pkl'
-CONFIG_FILE = 'YouTubeAutoListConfig.json'
-LOG_FILE = 'YouTubeAutoList.log'
+BASE_DIR = '/app'
+CACHE_FILE = os.path.join(BASE_DIR, 'YouTubeAutoListCache.pkl')
+CONFIG_FILE = os.path.join(BASE_DIR, 'YouTubeAutoListConfig.json')
+TOKEN_FILE = os.path.join(BASE_DIR, 'YouTubeAutoListToken.json')
+LOG_FILE = os.path.join(BASE_DIR, 'YouTubeAutoList.log')
 CACHE_DURATION = 7200  # 2 horas en segundos (configurable)
 
 
@@ -106,8 +105,6 @@ class YouTubeManager:
     def __init__(self):
         self.youtube = None
         self.cache = YouTubeCache()
-        self.video_cache = {}  # Cache para almacenar información de videos
-        self.playlist_cache = {}  # Cache para almacenar información de playlists
         self._setup_logging()
 
     def _setup_logging(self):
@@ -147,45 +144,82 @@ class YouTubeManager:
         return False
 
     def authenticate(self):
-        """Autenticación usando archivo de token o flujo interactivo"""
-        self.log_and_print(
-            "=== Iniciando autenticación OAuth 2.0 ===", Fore.YELLOW)
+        """Autenticación usando archivo de token con mejor manejo de errores"""
+        self.log_and_print("=== Iniciando autenticación OAuth 2.0 ===", Fore.YELLOW)
         try:
-            # Intentar cargar token existente
-            if os.path.exists('YouTubeAutoListToken.json'):
-                creds = Credentials.from_authorized_user_file(
-                    'YouTubeAutoListToken.json', SCOPES)
-                if not creds.expired:
-                    self.youtube = build('youtube', 'v3', credentials=creds)
-                    self.log_and_print(
-                        "Autenticación exitosa usando token existente", Fore.GREEN)
-                    return
-                if creds.refresh_token:
+            if not os.path.exists(TOKEN_FILE):
+                self.log_and_print(
+                    f"Archivo de token no encontrado en {TOKEN_FILE}",
+                    Fore.RED,
+                    logging.ERROR
+                )
+                raise FileNotFoundError(f"Token file not found at {TOKEN_FILE}")
+
+            # Verificar permisos del archivo
+            token_perms = oct(os.stat(TOKEN_FILE).st_mode)[-3:]
+            if token_perms != '600':
+                self.log_and_print(
+                    f"Advertencia: Permisos incorrectos en {TOKEN_FILE}: {token_perms}",
+                    Fore.YELLOW
+                )
+
+            with open(TOKEN_FILE, 'r') as token_file:
+                token_data = json.load(token_file)
+
+            # Verificar que todos los campos necesarios estén presentes
+            required_fields = ['token', 'refresh_token', 'token_uri', 'client_id', 'client_secret', 'scopes']
+            missing_fields = [field for field in required_fields if field not in token_data]
+            
+            if missing_fields:
+                self.log_and_print(
+                    f"Campos faltantes en el token: {', '.join(missing_fields)}. Regenere el token.",
+                    Fore.RED,
+                    logging.ERROR
+                )
+                raise ValueError(f"Missing fields in token: {', '.join(missing_fields)}")
+
+            try:
+                creds = Credentials(
+                    token=token_data['token'],
+                    refresh_token=token_data['refresh_token'],
+                    token_uri=token_data['token_uri'],
+                    client_id=token_data['client_id'],
+                    client_secret=token_data['client_secret'],
+                    scopes=token_data['scopes']
+                )
+
+                if creds.expired and creds.refresh_token:
                     creds.refresh(Request())
-                    self.youtube = build('youtube', 'v3', credentials=creds)
-                    # Guardar token actualizado
-                    with open('YouTubeAutoListToken.json', 'w') as token:
-                        token.write(creds.to_json())
-                    self.log_and_print(
-                        "Token refrescado exitosamente", Fore.GREEN)
-                    return
+                    # Actualizar token file con el nuevo token
+                    token_data['token'] = creds.token
+                    with open(TOKEN_FILE, 'w') as token_file:
+                        json.dump(token_data, token_file)
 
-            # Si no hay token, hacer autenticación interactiva una vez
-            flow = InstalledAppFlow.from_client_secrets_file(
-                'YouTubeAutoListClientSecret.json', SCOPES)
-            creds = flow.run_local_server(port=8080)
+                self.youtube = build('youtube', 'v3', credentials=creds)
+                self.log_and_print("Autenticación exitosa", Fore.GREEN)
+                return True
 
-            # Guardar token para futuras ejecuciones
-            with open('YouTubeAutoListToken.json', 'w') as token:
-                token.write(creds.to_json())
+            except Exception as e:
+                self.log_and_print(
+                    f"Error al crear/refrescar credenciales: {str(e)}",
+                    Fore.RED,
+                    logging.ERROR
+                )
+                raise
 
-            self.youtube = build('youtube', 'v3', credentials=creds)
-            self.log_and_print("Nueva autenticación exitosa", Fore.GREEN)
-
-            return True
+        except json.JSONDecodeError as e:
+            self.log_and_print(
+                f"Error al decodificar el archivo de token: {str(e)}",
+                Fore.RED,
+                logging.ERROR
+            )
+            raise
         except Exception as e:
             self.log_and_print(
-                f"Error en autenticación: {str(e)}", Fore.RED, logging.ERROR)
+                f"Error en autenticación: {str(e)}",
+                Fore.RED,
+                logging.ERROR
+            )
             raise
 
     def get_channel_videos(self, channel_config: Dict) -> List[Dict]:
