@@ -6,7 +6,8 @@ Sistema automatizado para gestionar listas de reproducción de YouTube basado en
 
 1. Python 3.11 o superior
 2. Docker (opcional)
-3. Cuenta de Google y proyecto en Google Cloud Platform
+3.  Credenciales de YouTube API
+4. Cuenta de Google y proyecto en Google Cloud Platform
 
 ## Configuración de Google Cloud Platform
 
@@ -26,6 +27,24 @@ Sistema automatizado para gestionar listas de reproducción de YouTube basado en
      * Permisos: `.../auth/youtube.force-ssl`
    - Descargar el archivo JSON de credenciales y renombrarlo a `YouTubeAutoListClientSecret.json`
 
+## Configuración de Autenticación
+
+1. **Revocar accesos previos** (importante para obtener refresh_token):
+   - Ir a https://myaccount.google.com/permissions
+   - Buscar "YouTubeAutoList"
+   - Revocar acceso existente
+
+2. **Generar nuevo token**:
+```bash
+python auth_setup.py
+```
+
+3. **Verificar el token generado**:
+```bash
+ls -l YouTubeAutoListToken.json
+cat YouTubeAutoListToken.json | grep refresh_token
+```
+
 ## Características
 
 - Autenticación OAuth 2.0 con YouTube API
@@ -35,12 +54,6 @@ Sistema automatizado para gestionar listas de reproducción de YouTube basado en
 - Limpieza automática de videos antiguos
 - Soporte para múltiples canales y listas de reproducción
 - Contenedorización con Docker
-
-## Requisitos
-
-- Python 3.11+
-- Credenciales de YouTube API
-- Docker (opcional)
 
 ## Estructura
 
@@ -73,6 +86,16 @@ graph TD
     F --> L[_add_to_playlist]
     A --> M[cleanup_playlists]
     M --> N[_get_playlist_items]
+    
+    %% Nuevo subgraph para manejo de errores
+    subgraph "Manejo de Errores"
+        QE[_check_quota_error]
+        G --> QE
+        J --> QE
+        L --> QE
+        QE --> X[QuotaExceededException]
+        X --> Y[sys.exit]
+    end
     
     subgraph "Caché"
         O[YouTubeCache.__init__]
@@ -111,6 +134,36 @@ graph TD
 }
 ```
 
+## Expresiones Regulares en Configuración
+
+Los patrones de búsqueda soportan:
+
+1. **Palabras exactas**:
+```json
+"title_pattern": "(?i)(\\b(IA|AI|cars)\\b)"
+```
+
+2. **Palabras con sufijos**:
+```json
+"title_pattern": "\\b(bike|gravel|mtb)\\w*"
+```
+
+3. **Patrones específicos por canal**:
+```json
+{
+    "channel_name": "Bike Sport",
+    "title_pattern": "(?i)((Latest news bulletin.*Evening)|\\b(Gravel|MTB)\\b)"
+}
+```
+
+4. **Formatos de fecha/hora**:
+```json
+{
+    "channel_name": "TOUR FRANCE",
+    "title_pattern": "(?i)(Noticias del \\d{4}/\\d{2}/\\d{2} 20h00)"
+}
+```
+
 ### Variables de Entorno Docker
 
 ```yaml
@@ -137,7 +190,7 @@ python YouTubeAutoList.py
 
 ### Docker 
 
-# Falta aclar contexto de por que no se usa volumnes y docker compose 
+Tener en cuenta que en el contexto que se ejecuta no permite volumenes ni docker compose.
 
 1. Construir imagen:
 ```bash
@@ -154,11 +207,3 @@ docker run -d --name youtubeautolisttag --restart unless-stopped owner/youtubeau
 Los logs se guardan en:
 - `logs/YouTubeAutoList.log`: Logs de la aplicación
 - `logs/cron.log`: Logs de las ejecuciones programadas
-
-## Contribuir
-
-1. Fork del repositorio
-2. Crear rama feature (`git checkout -b feature/NuevaCaracteristica`)
-3. Commit cambios (`git commit -am 'Añadir nueva característica'`)
-4. Push a la rama (`git push origin feature/NuevaCaracteristica`)
-5. Crear Pull Request
