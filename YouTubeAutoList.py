@@ -13,6 +13,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from colorama import init, Fore
 import pickle
+import sys  # Añadir import de sys
 
 # Inicialización de colorama para soporte de colores en consola
 init()
@@ -29,7 +30,9 @@ CACHE_DURATION = 7200  # 2 horas en segundos (configurable)
 
 class QuotaExceededException(Exception):
     """Excepción personalizada para manejar el exceso de cuota de YouTube."""
-    pass
+    def __init__(self, message="Se ha excedido la cuota diaria de YouTube"):
+        self.message = message
+        super().__init__(self.message)
 
 
 class YouTubeCache:
@@ -269,6 +272,9 @@ class YouTubeManager:
             self.cache.update_cache(channel_id, videos, 'videos')
             return videos
 
+        except HttpError as e:
+            self._check_quota_error(e)
+            raise
         except Exception as e:
             self.log_and_print(
                 f"Error al obtener videos: {str(e)}",
@@ -276,6 +282,16 @@ class YouTubeManager:
                 logging.ERROR
             )
             return []
+
+    def _check_quota_error(self, error: HttpError):
+        """Verifica si el error es de cuota excedida y lanza la excepción correspondiente"""
+        if isinstance(error, HttpError) and error.resp.status == 403 and "quotaExceeded" in str(error):
+            self.log_and_print(
+                "¡CUOTA EXCEDIDA! Deteniendo la ejecución completa.",
+                Fore.RED,
+                logging.ERROR
+            )
+            raise QuotaExceededException()
 
     def _get_playlist_items(self, playlist_id: str) -> List[Dict]:
         """
@@ -297,13 +313,19 @@ class YouTubeManager:
             )
 
             while request:
-                response = request.execute()
-                items.extend(response['items'])
-                request = self.youtube.playlistItems().list_next(request, response)
+                try:
+                    response = request.execute()
+                    items.extend(response['items'])
+                    request = self.youtube.playlistItems().list_next(request, response)
+                except HttpError as e:
+                    self._check_quota_error(e)
+                    raise
 
             self.cache.update_cache(playlist_id, items, 'playlists')
             return items
 
+        except QuotaExceededException:
+            raise
         except Exception as e:
             self.log_and_print(
                 f"Error al obtener items de la lista {playlist_id}: {str(e)}",
@@ -313,9 +335,7 @@ class YouTubeManager:
             return []
 
     def _video_matches_criteria(self, video_details: Dict, channel_config: Dict) -> bool:
-        """
-        Verifica si un video cumple con los criterios especificados.
-        """
+        """Verifica si un video cumple con los criterios especificados."""
         try:
             if not video_details or 'snippet' not in video_details:
                 return False
@@ -325,19 +345,33 @@ class YouTubeManager:
             # Verificar el patrón del título si está configurado
             title_pattern = channel_config.get('title_pattern')
             if title_pattern:
-                match = re.search(title_pattern, title, re.IGNORECASE)
-                if not match:
+                try:
+                    match = re.search(title_pattern, title, re.IGNORECASE)
+                    if not match:
+                        self.log_and_print(
+                            f"Video descartado: '{title}' no coincide con el patrón configurado",
+                            Fore.YELLOW
+                        )
+                        return False
+                    else:
+                        # Mostrar el grupo coincidente y su contexto
+                        match_start = max(0, match.start() - 10)
+                        match_end = min(len(title), match.end() + 10)
+                        context = title[match_start:match_end]
+                        
+                        self.log_and_print(
+                            f"Coincidencia encontrada en título: '{title}'\n"
+                            f"Patrón coincidente: '{match.group(0)}'\n"
+                            f"Contexto: '...{context}...'",
+                            Fore.CYAN
+                        )
+                except re.error as e:
                     self.log_and_print(
-                        f"Video descartado: '{title}' no coincide con el patrón configurado: {title_pattern}",
-                        Fore.YELLOW
+                        f"Error en el patrón regex '{title_pattern}': {str(e)}",
+                        Fore.RED,
+                        logging.ERROR
                     )
                     return False
-                else:
-                    self.log_and_print(
-                        f"Coincidencia encontrada en título: '{title}' con patrón: {title_pattern}\n"
-                        f"Grupo coincidente: {match.group(0)}",
-                        Fore.CYAN
-                    )
 
             if 'id' in video_details:
                 video_id = video_details['id']
@@ -353,35 +387,41 @@ class YouTubeManager:
 
                     video_info = response['items'][0]
                     
-                    # 1. Detectar Shorts por múltiples indicadores
+                    # Sistema mejorado de detección de Shorts
                     is_short = False
+                    short_indicators = 0
+                    total_indicators = 4  # Número total de indicadores
                     
-                    # Verificar en la descripción
+                    # 1. Verificar en la descripción
                     description = str(video_info['snippet'].get('description', '')).lower()
                     if '#shorts' in description or '/shorts/' in description:
-                        is_short = True
+                        short_indicators += 1
                     
-                    # Verificar en el título
+                    # 2. Verificar en el título
                     if '#shorts' in title.lower():
-                        is_short = True
+                        short_indicators += 1
                     
-                    # Verificar duración (los Shorts suelen ser menores a 60 segundos)
+                    # 3. Verificar duración
                     duration = self._parse_duration(video_info['contentDetails']['duration'])
                     if duration <= 60:
-                        is_short = True
+                        short_indicators += 1
                     
-                    # Verificar proporciones del video (vertical)
+                    # 4. Verificar proporciones del video
                     if 'contentDetails' in video_info:
                         default_thumbnail = video_info['snippet']['thumbnails'].get('default', {})
                         if default_thumbnail:
                             width = default_thumbnail.get('width', 0)
                             height = default_thumbnail.get('height', 0)
                             if height > width:  # Proporción vertical
-                                is_short = True
+                                short_indicators += 1
+
+                    # Un video es considerado short si cumple con al menos 3 de los 4 indicadores
+                    is_short = short_indicators >= 3
 
                     if is_short:
                         self.log_and_print(
-                            f"Video descartado: '{title}' detectado como Short",
+                            f"Video descartado: '{title}' detectado como Short "
+                            f"(Indicadores: {short_indicators}/{total_indicators})",
                             Fore.YELLOW
                         )
                         return False
@@ -624,12 +664,12 @@ class YouTubeManager:
             }
 
             for playlist_id, time_limit in playlist_limits.items():
-                self.log_and_print(
-                    f"=== Iniciando limpieza de playlist {playlist_id} (límite: {time_limit.days} días) ===",
-                    Fore.YELLOW
-                )
-
                 try:
+                    self.log_and_print(
+                        f"=== Iniciando limpieza de playlist {playlist_id} (límite: {time_limit.days} días) ===",
+                        Fore.YELLOW
+                    )
+
                     playlist_items = self._get_playlist_items(playlist_id)
                     
                     if not playlist_items:
@@ -638,49 +678,66 @@ class YouTubeManager:
                     videos_eliminados = 0
                     for item in playlist_items:
                         try:
-                            # Usar contentDetails.videoPublishedAt para la fecha real de publicación
-                            video_published_at = datetime.strptime(
-                                item['contentDetails']['videoPublishedAt'],
-                                '%Y-%m-%dT%H:%M:%SZ'
-                            )
-                            
-                            # Calcular tiempo desde la publicación original
-                            time_passed = datetime.utcnow() - video_published_at
-                            
-                            # Log mejorado
-                            self.log_and_print(
-                                f"Video: {item['snippet']['title']}\n"
-                                f"  - Fecha publicación original: {video_published_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                                f"  - Días desde publicación: {time_passed.days}",
-                                Fore.CYAN
-                            )
-
-                            if time_passed > time_limit:
-                                try:
-                                    self.youtube.playlistItems().delete(
-                                        id=item['id']
-                                    ).execute()
-
-                                    videos_eliminados += 1
-                                    self.log_and_print(
-                                        f"Video {item['snippet']['title']} eliminado por antigüedad "
-                                        f"(días desde publicación: {time_passed.days} > {time_limit.days})",
-                                        Fore.GREEN
+                            # Extraer fecha del item ya obtenido (no requiere llamada adicional a la API)
+                            published_at = None
+                            try:
+                                if ('contentDetails' in item and 
+                                    'videoPublishedAt' in item['contentDetails']):
+                                    published_at = datetime.strptime(
+                                        item['contentDetails']['videoPublishedAt'],
+                                        '%Y-%m-%dT%H:%M:%SZ'
                                     )
-                                    time.sleep(1)
+                                else:
+                                    # Si no hay fecha de publicación, usar snippet.publishedAt como fallback
+                                    published_at = datetime.strptime(
+                                        item['snippet']['publishedAt'],
+                                        '%Y-%m-%dT%H:%M:%SZ'
+                                    )
+                                
+                                # Calcular tiempo desde la publicación
+                                time_passed = datetime.utcnow() - published_at
+                                
+                                # Log mejorado
+                                self.log_and_print(
+                                    f"Video: {item['snippet']['title']}\n"
+                                    f"  - Fecha publicación: {published_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                    f"  - Días desde publicación: {time_passed.days}",
+                                    Fore.CYAN
+                                )
 
-                                except HttpError as e:
-                                    error_details = e.error_details[0] if e.error_details else {}
-                                    if error_details.get('reason') == 'quotaExceeded':
-                                        raise QuotaExceededException(
-                                            "Se ha excedido la cuota diaria de YouTube"
-                                        )
-                                    else:
+                                if time_passed > time_limit:
+                                    try:
+                                        self.youtube.playlistItems().delete(
+                                            id=item['id']
+                                        ).execute()
+
+                                        videos_eliminados += 1
                                         self.log_and_print(
-                                            f"Error al eliminar video: {str(e)}",
-                                            Fore.RED,
-                                            logging.ERROR
+                                            f"Video {item['snippet']['title']} eliminado por antigüedad "
+                                            f"(días desde publicación: {time_passed.days} > {time_limit.days})",
+                                            Fore.GREEN
                                         )
+                                        time.sleep(1)
+
+                                    except HttpError as e:
+                                        error_details = e.error_details[0] if e.error_details else {}
+                                        if error_details.get('reason') == 'quotaExceeded':
+                                            raise QuotaExceededException(
+                                                "Se ha excedido la cuota diaria de YouTube"
+                                            )
+                                        else:
+                                            self.log_and_print(
+                                                f"Error al eliminar video: {str(e)}",
+                                                Fore.RED,
+                                                logging.ERROR
+                                            )
+
+                            except (KeyError, ValueError) as e:
+                                self.log_and_print(
+                                    f"No se pudo determinar la fecha de publicación para: {item['snippet']['title']}. Error: {str(e)}",
+                                    Fore.YELLOW
+                                )
+                                continue
 
                         except Exception as e:
                             self.log_and_print(
@@ -698,12 +755,20 @@ class YouTubeManager:
 
                 except QuotaExceededException:
                     raise
+                except Exception as e:
+                    self.log_and_print(
+                        f"Error procesando playlist {playlist_id}: {str(e)}",
+                        Fore.RED,
+                        logging.ERROR
+                    )
 
             self.log_and_print(
                 "=== Proceso de limpieza finalizado para todas las playlists ===",
                 Fore.GREEN
             )
 
+        except QuotaExceededException:
+            raise
         except Exception as e:
             self.log_and_print(
                 f"Error en limpieza de playlists: {str(e)}",
@@ -735,44 +800,35 @@ def main():
             )
             return
 
-        # Autenticar
+        # Autenticar y ejecutar procesos principales
         manager.authenticate()
-
-        # Cargar configuración
         config = manager.load_config()
-        if not config.get('channels'):
-            manager.log_and_print(
-                "No hay canales configurados.", Fore.RED, logging.ERROR)
-            return
-
-        # Validar playlist_id en cada canal
-        for channel in config['channels']:
-            if not channel.get('playlist_id'):
-                manager.log_and_print(
-                    f"Error: Canal '{channel.get('channel_name')}' no tiene playlist_id.",
-                    Fore.RED,
-                    logging.ERROR
-                )
-                return
 
         # Gestionar la lista de reproducción
         manager.manage_playlist(config)
-
-        # Ejecutar limpieza de playlists después de procesar todos los canales
+        
+        # Solo ejecutar limpieza si no hubo quota exceeded en manage_playlist
         manager.cleanup_playlists()
-
+        
         manager.log_and_print(
             "Proceso completado exitosamente",
             Fore.GREEN
         )
-    except QuotaExceededException:
-        print(Fore.RED + "Se ha excedido la cuota diaria de YouTube." + Fore.RESET)
+
+    except QuotaExceededException as e:
+        manager.log_and_print(
+            f"ERROR CRÍTICO: {str(e)}. Deteniendo el programa inmediatamente.",
+            Fore.RED,
+            logging.ERROR
+        )
+        sys.exit(1)  # Asegura que el programa termine inmediatamente
     except Exception as e:
         manager.log_and_print(
             f"Error en el proceso principal: {str(e)}",
             Fore.RED,
             logging.ERROR
         )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

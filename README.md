@@ -1,5 +1,14 @@
 # YouTubeAutoList
 
+<!-- Versión alternativa usando variables (solo funcionará en GitHub) -->
+[//]: # "Versión con variables de GitHub - comentada para vista previa local"
+![GitHub Repo stars](https://img.shields.io/github/stars/${GITHUB_REPOSITORY})
+![GitHub Repo forks](https://img.shields.io/github/forks/${GITHUB_REPOSITORY})
+[![latest release](https://img.shields.io/github/v/release/${GITHUB_REPOSITORY}.svg)](https://github.com/${GITHUB_REPOSITORY}/releases/latest)
+[![Commits since last release](https://img.shields.io/github/commits-since/${GITHUB_REPOSITORY}/latest/main)](https://github.com/${GITHUB_REPOSITORY}/commits/main)
+[![Github Contributors](https://img.shields.io/github/contributors/${GITHUB_REPOSITORY}.svg)](https://github.com/${GITHUB_REPOSITORY}/graphs/contributors)
+[![Github All Releases](https://img.shields.io/github/downloads/${GITHUB_REPOSITORY}/total.svg)](https://github.com/${GITHUB_REPOSITORY}/releases)
+
 Sistema automatizado para gestionar listas de reproducción de YouTube basado en criterios configurables.
 
 ## Requisitos Previos
@@ -69,7 +78,7 @@ YouTubeAutoList/
 └── YouTubeAutoListClientSecret.json  # Credenciales de Google Cloud
 ```
 
-## Diagrama de Flujo
+## Diagrama de Flujo 
 
 ```mermaid
 graph TD
@@ -78,17 +87,17 @@ graph TD
     C --> D[authenticate]
     D --> E[load_config]
     E --> F[manage_playlist]
-    F --> G[get_channel_videos]
-    G --> H[_video_matches_criteria]
+    F --> G[get_channel_videos<br/>quota: ~102/canal]
+    G --> H[_video_matches_criteria<br/>quota: ~3/video]
     H --> I[_parse_duration]
-    F --> J[_get_playlist_items]
+    F --> J[_get_playlist_items<br/>quota: ~1/50 items]
     F --> K[_video_in_playlist]
-    F --> L[_add_to_playlist]
+    F --> L[_add_to_playlist<br/>quota: 50/video]
     A --> M[cleanup_playlists]
-    M --> N[_get_playlist_items]
+    M --> N[_get_playlist_items<br/>quota: ~1/50 items]
     
-    %% Nuevo subgraph para manejo de errores
-    subgraph "Manejo de Errores"
+    %% Manejo de Errores y Cuota
+    subgraph "Control de Cuota"
         QE[_check_quota_error]
         G --> QE
         J --> QE
@@ -96,22 +105,30 @@ graph TD
         QE --> X[QuotaExceededException]
         X --> Y[sys.exit]
     end
-    
-    subgraph "Caché"
-        O[YouTubeCache.__init__]
-        P[_load_cache]
-        Q[save_cache]
-        R[get_cached_data]
-        S[update_cache]
-        T[is_cache_valid]
-    end
 
     subgraph "Autenticación"
         D --> U[Verificar token existente]
         U --> V[Cargar credenciales]
         V --> W[Refrescar token si es necesario]
     end
+
 ```
+
+### Consumo de Cuota por Canal
+
+Para cada canal procesado, el consumo aproximado es:
+- Búsqueda inicial: 100 unidades
+- Detalles de videos: 1-2 unidades por video
+- Verificación de playlist: 1 unidad por 50 videos
+- Agregar video: 50 unidades por video
+- Eliminar video: 50 unidades por video
+
+El sistema de caché reduce el consumo total en aproximadamente un 80% al:
+- Almacenar resultados de búsqueda por 1 hora
+- Cachear contenidos de playlists por 2 horas
+- Evitar consultas repetidas de videos ya procesados
+
+**Nota**: La cuota diaria gratuita de YouTube API v3 es de 10,000 unidades.
 
 ## Configuración
 
