@@ -1,13 +1,11 @@
 # YouTubeAutoList
 
-<!-- Versión alternativa usando variables (solo funcionará en GitHub) -->
-[//]: # "Versión con variables de GitHub - comentada para vista previa local"
-![GitHub Repo stars](https://img.shields.io/github/stars/${GITHUB_REPOSITORY})
-![GitHub Repo forks](https://img.shields.io/github/forks/${GITHUB_REPOSITORY})
-[![latest release](https://img.shields.io/github/v/release/${GITHUB_REPOSITORY}.svg)](https://github.com/${GITHUB_REPOSITORY}/releases/latest)
-[![Commits since last release](https://img.shields.io/github/commits-since/${GITHUB_REPOSITORY}/latest/main)](https://github.com/${GITHUB_REPOSITORY}/commits/main)
-[![Github Contributors](https://img.shields.io/github/contributors/${GITHUB_REPOSITORY}.svg)](https://github.com/${GITHUB_REPOSITORY}/graphs/contributors)
-[![Github All Releases](https://img.shields.io/github/downloads/${GITHUB_REPOSITORY}/total.svg)](https://github.com/${GITHUB_REPOSITORY}/releases)
+![GitHub Repo stars](https://img.shields.io/github/stars/hfsotomayor/YouTubeAutoList?style=flat-square)
+![GitHub Repo forks](https://img.shields.io/github/forks/hfsotomayor/YouTubeAutoList?style=flat-square)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/hfsotomayor/YouTubeAutoList?style=flat-square)](https://github.com/hfsotomayor/YouTubeAutoList/releases)
+[![GitHub issues](https://img.shields.io/github/issues/hfsotomayor/YouTubeAutoList?style=flat-square)](https://github.com/hfsotomayor/YouTubeAutoList/issues)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/hfsotomayor/YouTubeAutoList?style=flat-square)](https://github.com/hfsotomayor/YouTubeAutoList/pulls)
+[![License](https://img.shields.io/github/license/hfsotomayor/YouTubeAutoList?style=flat-square)](https://github.com/hfsotomayor/YouTubeAutoList/blob/main/LICENSE)
 
 Sistema automatizado para gestionar listas de reproducción de YouTube basado en criterios configurables.
 
@@ -224,3 +222,28 @@ docker run -d --name youtubeautolisttag --restart unless-stopped owner/youtubeau
 Los logs se guardan en:
 - `logs/YouTubeAutoList.log`: Logs de la aplicación
 - `logs/cron.log`: Logs de las ejecuciones programadas
+
+## Commits Convencionales
+
+Este proyecto sigue la especificación de [Commits Convencionales](https://www.conventionalcommits.org/es/v1.0.0/).
+
+### Estructura del Commit
+
+#### Tipos de Commits
+- `feat`: Nueva característica
+- `fix`: Corrección de errores
+- `docs`: Cambios en documentación
+- `style`: Cambios de formato (espacios, punto y coma, etc)
+- `refactor`: Refactorización de código
+- `perf`: Mejoras de rendimiento
+- `test`: Añadir o modificar tests
+- `build`: Cambios en el sistema de build
+- `ci`: Cambios en integración continua
+- `chore`: Tareas de mantenimiento
+
+#### Ejemplos
+```bash
+feat(auth): implementar autenticación OAuth
+fix(cache): corregir error en expiración de caché
+docs(readme): actualizar diagrama de flujo
+refactor(api): optimizar llamadas a YouTube API

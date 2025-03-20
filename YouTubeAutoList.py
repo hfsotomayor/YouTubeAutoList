@@ -35,6 +35,13 @@ class QuotaExceededException(Exception):
         super().__init__(self.message)
 
 
+class TokenExpiredException(Exception):
+    """Excepción personalizada para manejar tokens expirados o revocados."""
+    def __init__(self, message="El token ha expirado o ha sido revocado"):
+        self.message = message
+        super().__init__(self.message)
+
+
 class YouTubeCache:
     """Gestiona el sistema de caché para las consultas a la API de YouTube."""
 
@@ -225,6 +232,17 @@ class YouTubeManager:
             )
             raise
 
+    def _check_token_error(self, error: Exception):
+        """Verifica si el error está relacionado con el token."""
+        error_str = str(error).lower()
+        if "invalid_grant" in error_str or "token" in error_str and ("expired" in error_str or "revoked" in error_str):
+            self.log_and_print(
+                "¡ERROR DE TOKEN! El token ha expirado o ha sido revocado. Ejecute auth_setup.py para generar uno nuevo.",
+                Fore.RED,
+                logging.ERROR
+            )
+            raise TokenExpiredException()
+
     def get_channel_videos(self, channel_config: Dict) -> List[Dict]:
         """Obtiene videos con optimización de cuota"""
         channel_id = channel_config['channel_id']
@@ -276,12 +294,13 @@ class YouTubeManager:
             self._check_quota_error(e)
             raise
         except Exception as e:
+            self._check_token_error(e)  # Verificar error de token
             self.log_and_print(
                 f"Error al obtener videos: {str(e)}",
                 Fore.RED,
                 logging.ERROR
             )
-            return []
+            raise  # Propagar la excepción
 
     def _check_quota_error(self, error: HttpError):
         """Verifica si el error es de cuota excedida y lanza la excepción correspondiente"""
@@ -327,12 +346,13 @@ class YouTubeManager:
         except QuotaExceededException:
             raise
         except Exception as e:
+            self._check_token_error(e)  # Verificar error de token
             self.log_and_print(
                 f"Error al obtener items de la lista {playlist_id}: {str(e)}",
                 Fore.RED,
                 logging.ERROR
             )
-            return []
+            raise  # Propagar la excepción
 
     def _video_matches_criteria(self, video_details: Dict, channel_config: Dict) -> bool:
         """Verifica si un video cumple con los criterios especificados."""
@@ -822,6 +842,13 @@ def main():
             logging.ERROR
         )
         sys.exit(1)  # Asegura que el programa termine inmediatamente
+    except TokenExpiredException as e:
+        manager.log_and_print(
+            f"ERROR CRÍTICO: {str(e)}. Ejecute auth_setup.py para generar un nuevo token.",
+            Fore.RED,
+            logging.ERROR
+        )
+        sys.exit(1)
     except Exception as e:
         manager.log_and_print(
             f"Error en el proceso principal: {str(e)}",
