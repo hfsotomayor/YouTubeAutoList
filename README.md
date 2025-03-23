@@ -52,10 +52,11 @@ ls -l YouTubeAutoListToken.json
 cat YouTubeAutoListToken.json | grep refresh_token
 ```
 
-## Características
+## Características Principales
 
-- Autenticación OAuth 2.0 con YouTube API
+- Autenticación OAuth 2.0 con YouTube API (3+ meses)
 - Sistema de caché para optimizar las consultas a la API
+- Sistema de notificaciones (Telegram/Email)
 - Filtrado de videos por duración y patrones en títulos
 - Detección y exclusión automática de Shorts
 - Limpieza automática de videos antiguos
@@ -73,7 +74,9 @@ YouTubeAutoList/
 ├── requirements.txt       # Dependencias Python
 ├── YouTubeAutoListConfig.json    # Configuración de canales
 ├── YouTubeAutoListToken.json     # Token de autenticación
+├── YouTubeAutoListNotification_config.json # Notificaciones, cuota excedida, fallos en token
 └── YouTubeAutoListClientSecret.json  # Credenciales de Google Cloud
+
 ```
 
 ## Diagrama de Flujo 
@@ -95,21 +98,31 @@ graph TD
     M --> N[_get_playlist_items<br/>quota: ~1/50 items]
     
     %% Manejo de Errores y Cuota
-    subgraph "Control de Cuota"
+    subgraph "Control de Errores"
         QE[_check_quota_error]
-        G --> QE
-        J --> QE
-        L --> QE
+        TE[_check_token_error]
+        G --> QE & TE
+        J --> QE & TE
+        L --> QE & TE
         QE --> X[QuotaExceededException]
-        X --> Y[sys.exit]
+        TE --> Y[TokenExpiredException]
+        X & Y --> Z[Notificación<br/>Telegram/Email]
+        Z --> W[sys.exit]
     end
 
-    subgraph "Autenticación"
+    subgraph "Autenticación Extendida"
         D --> U[Verificar token existente]
-        U --> V[Cargar credenciales]
-        V --> W[Refrescar token si es necesario]
+        U --> V[Cargar credenciales<br/>duración: 3+ meses]
+        V --> R[Refrescar token<br/>automático]
     end
 
+    subgraph "Sistema de Notificaciones"
+        NA[NotificationManager]
+        NB[send_notification]
+        NC[_send_email]
+        NA --> NB
+        NB --> NC
+    end
 ```
 
 ### Consumo de Cuota por Canal
@@ -146,6 +159,21 @@ El sistema de caché reduce el consumo total en aproximadamente un 80% al:
             "hours_limit": 8
         }
     ]
+}
+```
+### Archivo YouTubeAutoListNotification_config.json
+
+```json
+{
+    "telegram_token": "YOUR_BOT_TOKEN",
+    "telegram_chat_id": "YOUR_CHAT_ID",
+    "email": {
+        "smtp_server": "smtp.gmail.com",
+        "username": "your-email@gmail.com",
+        "password": "your-app-password",
+        "from": "your-email@gmail.com",
+        "to": "notification-email@domain.com"
+    }
 }
 ```
 

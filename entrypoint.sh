@@ -16,19 +16,23 @@ ls -la /app/
 pkill cron || true
 rm -f /var/run/crond.pid
 
-# Prueba la ejecución del script antes de iniciar cron
-echo "Probando script..."
-cd /app && /usr/local/bin/python /app/YouTubeAutoList.py
+# Configura el cron para ejecutar en los horarios especificados
+echo "Configurando cron..."
+# Inicia cron en segundo plano
+cron -f &
+CRON_PID=$!
 
-# Si la prueba es exitosa, inicia cron
-if [ $? -eq 0 ]; then
-    echo "Prueba exitosa, iniciando cron..."
-    # Inicia cron en primer plano
-    cron -f &
-else
-    echo "Error en la prueba inicial del script"
-    exit 1
-fi
+# Configura trap para manejar señales de detención
+trap 'kill $CRON_PID; exit 0' SIGTERM SIGINT
+
+# Muestra los próximos horarios programados
+echo "Próximas ejecuciones programadas:"
+crontab -l
 
 # Muestra los logs en tiempo real
-exec tail -f /var/log/cron.log
+echo "Iniciando monitoreo de logs..."
+touch /var/log/cron.log
+tail -f /var/log/cron.log &
+
+# Esperar señales mientras mantiene el contenedor ejecutándose
+wait $CRON_PID

@@ -21,6 +21,7 @@ COPY  YouTubeAutoList.py .
 COPY  entrypoint.sh .
 COPY  YouTubeAutoListConfig.json .
 COPY  YouTubeAutoListClientSecret.json .
+COPY YouTubeAutoListNotification_config.json .
 
 # El token debe ser copiado después de generarlo fuera del contenedor
 COPY YouTubeAutoListToken.json . 
@@ -31,7 +32,8 @@ RUN chmod 644 requirements.txt && \
     chmod 755 entrypoint.sh && \
     chmod 644 YouTubeAutoListConfig.json && \
     chmod 644 YouTubeAutoListClientSecret.json && \
-    chmod 600 YouTubeAutoListToken.json
+    chmod 600 YouTubeAutoListToken.json && \
+    chmod 600 YouTubeAutoListNotification_config.json
 
 # Instala las dependencias de Python definidas en requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt  

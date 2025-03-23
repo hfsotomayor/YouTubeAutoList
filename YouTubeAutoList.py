@@ -14,6 +14,9 @@ from googleapiclient.discovery import build
 from colorama import init, Fore
 import pickle
 import sys  # Añadir import de sys
+import telegram  # Añadir al requirements.txt
+import smtplib
+from email.mime.text import MIMEText
 
 # Inicialización de colorama para soporte de colores en consola
 init()
@@ -26,6 +29,7 @@ CONFIG_FILE = os.path.join(BASE_DIR, 'YouTubeAutoListConfig.json')
 TOKEN_FILE = os.path.join(BASE_DIR, 'YouTubeAutoListToken.json')
 LOG_FILE = os.path.join(BASE_DIR, 'YouTubeAutoList.log')
 CACHE_DURATION = 7200  # 2 horas en segundos (configurable)
+NOTIFICATION_CONFIG = os.path.join(BASE_DIR, 'YouTubeAutoListNotification_config.json')
 
 
 class QuotaExceededException(Exception):
@@ -109,6 +113,54 @@ class YouTubeCache:
         return elapsed < self.cache_duration[cache_type]
 
 
+class NotificationManager:
+    """Gestiona las notificaciones del sistema."""
+    
+    def __init__(self, config):
+        self.telegram_token = config.get('telegram_token')
+        self.telegram_chat_id = config.get('telegram_chat_id')
+        self.email_config = config.get('email')
+        self.bot = None
+        if self.telegram_token:
+            try:
+                self.bot = telegram.Bot(token=self.telegram_token)
+            except telegram.error.InvalidToken:
+                logging.warning("Token de Telegram inválido. Las notificaciones por Telegram estarán deshabilitadas.")
+
+    def send_notification(self, message: str, level: str = 'info'):
+        """Envía notificación por múltiples canales."""
+        try:
+            # Telegram
+            if self.bot:
+                self.bot.send_message(
+                    chat_id=self.telegram_chat_id,
+                    text=f"[{level.upper()}] YouTubeAutoList: {message}"
+                )
+            
+            # Email para errores críticos
+            if level == 'critical' and self.email_config:
+                self._send_email(message)
+        except Exception as e:
+            logging.error(f"Error enviando notificación: {str(e)}")
+
+    def _send_email(self, message: str):
+        """Envía email para errores críticos."""
+        try:
+            msg = MIMEText(message)
+            msg['Subject'] = 'YouTubeAutoList - ERROR CRÍTICO'
+            msg['From'] = self.email_config['from']
+            msg['To'] = self.email_config['to']
+
+            with smtplib.SMTP_SSL(self.email_config['smtp_server']) as server:
+                server.login(
+                    self.email_config['username'],
+                    self.email_config['password']
+                )
+                server.send_message(msg)
+        except Exception as e:
+            logging.error(f"Error enviando email: {str(e)}")
+
+
 class YouTubeManager:
     """Gestiona todas las operaciones con la API de YouTube."""
 
@@ -116,6 +168,8 @@ class YouTubeManager:
         self.youtube = None
         self.cache = YouTubeCache()
         self._setup_logging()
+        self.notification = NotificationManager(self.load_notification_config())
+        self.quota_exceeded = False  # Nueva bandera para control de cuota
 
     def _setup_logging(self):
         """Configura el sistema de logging con colores y formato específico."""
@@ -236,11 +290,9 @@ class YouTubeManager:
         """Verifica si el error está relacionado con el token."""
         error_str = str(error).lower()
         if "invalid_grant" in error_str or "token" in error_str and ("expired" in error_str or "revoked" in error_str):
-            self.log_and_print(
-                "¡ERROR DE TOKEN! El token ha expirado o ha sido revocado. Ejecute auth_setup.py para generar uno nuevo.",
-                Fore.RED,
-                logging.ERROR
-            )
+            message = "¡ERROR DE TOKEN! El token ha expirado o ha sido revocado. Ejecute auth_setup.py para generar uno nuevo."
+            self.log_and_print(message, Fore.RED, logging.ERROR)
+            self.notification.send_notification(message, 'critical')
             raise TokenExpiredException()
 
     def get_channel_videos(self, channel_config: Dict) -> List[Dict]:
@@ -303,13 +355,12 @@ class YouTubeManager:
             raise  # Propagar la excepción
 
     def _check_quota_error(self, error: HttpError):
-        """Verifica si el error es de cuota excedida y lanza la excepción correspondiente"""
+        """Verifica si el error es de cuota excedida y establece la bandera"""
         if isinstance(error, HttpError) and error.resp.status == 403 and "quotaExceeded" in str(error):
-            self.log_and_print(
-                "¡CUOTA EXCEDIDA! Deteniendo la ejecución completa.",
-                Fore.RED,
-                logging.ERROR
-            )
+            self.quota_exceeded = True
+            message = "¡CUOTA EXCEDIDA! Deteniendo operaciones que requieren cuota."
+            self.log_and_print(message, Fore.RED, logging.ERROR)
+            self.notification.send_notification(message, 'critical')
             raise QuotaExceededException()
 
     def _get_playlist_items(self, playlist_id: str) -> List[Dict]:
@@ -675,8 +726,26 @@ class YouTubeManager:
             )
             return {"channels": []}
 
+    def load_notification_config(self) -> Dict:
+        try:
+            with open(NOTIFICATION_CONFIG, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            self.log_and_print(
+                f"Error al cargar configuración de notificaciones: {str(e)}",
+                Fore.YELLOW
+            )
+            return {}
+
     def cleanup_playlists(self):
         """Limpia las listas de reproducción según los criterios de tiempo."""
+        if self.quota_exceeded:
+            self.log_and_print(
+                "Omitiendo limpieza por cuota excedida",
+                Fore.YELLOW
+            )
+            return
+
         try:
             playlist_limits = {
                 'PLwFfNCxuxPv1S0Laim0gk3WOXJvLesNi0': timedelta(days=2),
@@ -697,6 +766,13 @@ class YouTubeManager:
 
                     videos_eliminados = 0
                     for item in playlist_items:
+                        if self.quota_exceeded:
+                            self.log_and_print(
+                                "Deteniendo limpieza por cuota excedida",
+                                Fore.YELLOW
+                            )
+                            return
+
                         try:
                             # Extraer fecha del item ya obtenido (no requiere llamada adicional a la API)
                             published_at = None
@@ -727,17 +803,18 @@ class YouTubeManager:
 
                                 if time_passed > time_limit:
                                     try:
-                                        self.youtube.playlistItems().delete(
-                                            id=item['id']
-                                        ).execute()
+                                        if not self.quota_exceeded:  # Solo intentar eliminar si no hay exceso de cuota
+                                            self.youtube.playlistItems().delete(
+                                                id=item['id']
+                                            ).execute()
 
-                                        videos_eliminados += 1
-                                        self.log_and_print(
-                                            f"Video {item['snippet']['title']} eliminado por antigüedad "
-                                            f"(días desde publicación: {time_passed.days} > {time_limit.days})",
-                                            Fore.GREEN
-                                        )
-                                        time.sleep(1)
+                                            videos_eliminados += 1
+                                            self.log_and_print(
+                                                f"Video {item['snippet']['title']} eliminado por antigüedad "
+                                                f"(días desde publicación: {time_passed.days} > {time_limit.days})",
+                                                Fore.GREEN
+                                            )
+                                            time.sleep(1)
 
                                     except HttpError as e:
                                         error_details = e.error_details[0] if e.error_details else {}
@@ -760,6 +837,9 @@ class YouTubeManager:
                                 continue
 
                         except Exception as e:
+                            if "quotaExceeded" in str(e):
+                                self.quota_exceeded = True
+                                return
                             self.log_and_print(
                                 f"Error procesando video: {str(e)}",
                                 Fore.RED,
@@ -774,7 +854,7 @@ class YouTubeManager:
                     self.cache.update_cache(playlist_id, None, 'playlists')
 
                 except QuotaExceededException:
-                    raise
+                    return  # Salir inmediatamente
                 except Exception as e:
                     self.log_and_print(
                         f"Error procesando playlist {playlist_id}: {str(e)}",
@@ -788,7 +868,7 @@ class YouTubeManager:
             )
 
         except QuotaExceededException:
-            raise
+            return  # Salir inmediatamente
         except Exception as e:
             self.log_and_print(
                 f"Error en limpieza de playlists: {str(e)}",
@@ -825,13 +905,18 @@ def main():
         config = manager.load_config()
 
         # Gestionar la lista de reproducción
-        manager.manage_playlist(config)
-        
-        # Solo ejecutar limpieza si no hubo quota exceeded en manage_playlist
-        manager.cleanup_playlists()
+        try:
+            manager.manage_playlist(config)
+        except QuotaExceededException:
+            # Continuar con otras operaciones que no requieren cuota
+            pass
+
+        # Solo ejecutar limpieza si no hay exceso de cuota
+        if not manager.quota_exceeded:
+            manager.cleanup_playlists()
         
         manager.log_and_print(
-            "Proceso completado exitosamente",
+            "Proceso completado" + (" (con limitación de cuota)" if manager.quota_exceeded else " exitosamente"),
             Fore.GREEN
         )
 

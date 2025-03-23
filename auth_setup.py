@@ -22,17 +22,19 @@ def initial_auth():
             print("Eliminando token existente para forzar nueva autenticación...")
             os.remove('YouTubeAutoListToken.json')
 
-        # Configurar el flujo de autenticación para forzar el refresh_token
+        # Configurar el flujo de autenticación para máxima duración
         flow = InstalledAppFlow.from_client_secrets_file(
             'YouTubeAutoListClientSecret.json',
             SCOPES,
             redirect_uri='http://localhost:8080/'
         )
         
-        # Forzar acceso offline y prompt de consentimiento
+        # Forzar acceso offline y prompt de consentimiento con máxima duración
         flow.oauth2session.fetch_token_extra_kwargs = {
             'access_type': 'offline',
-            'prompt': 'consent'  # Esto fuerza a Google a darnos un nuevo refresh_token
+            'prompt': 'consent',
+            'include_granted_scopes': 'true',
+            'approval_prompt': 'force'  # Asegura nuevo refresh_token
         }
 
         # Ejecutar el servidor local para la autenticación
