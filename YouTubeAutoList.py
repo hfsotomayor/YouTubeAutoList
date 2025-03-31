@@ -161,6 +161,78 @@ class NotificationManager:
             logging.error(f"Error enviando email: {str(e)}")
 
 
+class ExecutionStats:
+    """Mantiene estadísticas de la ejecución."""
+    def __init__(self):
+        self.stats = {
+            'added': {},      # videos añadidos por playlist
+            'removed': {},    # videos eliminados por playlist
+            'duration': {     # duración total por playlist
+                'added': {},
+                'removed': {}
+            },
+            'playlist_names': {}  # mapeo de IDs a nombres
+        }
+        self.totals = {
+            'videos_added': 0,
+            'videos_removed': 0,
+            'duration_added': 0,
+            'duration_removed': 0
+        }
+
+    def set_playlist_name(self, playlist_id: str, name: str):
+        """Guarda el nombre de la playlist para mostrar en el resumen."""
+        self.stats['playlist_names'][playlist_id] = name
+
+    def add_video(self, playlist_id: str, duration: int):
+        """Registra un video añadido."""
+        self.stats['added'][playlist_id] = self.stats['added'].get(playlist_id, 0) + 1
+        self.stats['duration']['added'][playlist_id] = self.stats['duration']['added'].get(playlist_id, 0) + duration
+        self.totals['videos_added'] += 1
+        self.totals['duration_added'] += duration
+
+    def remove_video(self, playlist_id: str, duration: int):
+        """Registra un video eliminado."""
+        self.stats['removed'][playlist_id] = self.stats['removed'].get(playlist_id, 0) + 1
+        self.stats['duration']['removed'][playlist_id] = self.stats['duration']['removed'].get(playlist_id, 0) + duration
+        self.totals['videos_removed'] += 1
+        self.totals['duration_removed'] += duration
+
+    def format_duration(self, seconds: int) -> str:
+        """Formatea la duración en formato legible."""
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        return f"{hours}h {minutes}m"
+
+    def get_summary(self) -> str:
+        """Genera un resumen de la ejecución."""
+        summary = ["=== Resumen de Ejecución ==="]
+        
+        for playlist_id in set(self.stats['added'].keys()) | set(self.stats['removed'].keys()):
+            # Usar nombre de playlist si está disponible, si no usar ID
+            playlist_name = self.stats['playlist_names'].get(playlist_id, playlist_id)
+            summary.append(f"\nPlaylist: {playlist_name}")
+            
+            # Videos agregados
+            videos_added = self.stats['added'].get(playlist_id, 0)
+            duration_added = self.stats['duration']['added'].get(playlist_id, 0)
+            summary.append(f"  + Agregados: {videos_added} videos ({self.format_duration(duration_added)})")
+            
+            # Videos eliminados
+            videos_removed = self.stats['removed'].get(playlist_id, 0)
+            duration_removed = self.stats['duration']['removed'].get(playlist_id, 0)
+            summary.append(f"  - Eliminados: {videos_removed} videos ({self.format_duration(duration_removed)})")
+
+        # Agregar totales al final
+        summary.extend([
+            "\n=== Totales ===",
+            f"Videos agregados: {self.totals['videos_added']} ({self.format_duration(self.totals['duration_added'])})",
+            f"Videos eliminados: {self.totals['videos_removed']} ({self.format_duration(self.totals['duration_removed'])})"
+        ])
+
+        return "\n".join(summary)
+
+
 class YouTubeManager:
     """Gestiona todas las operaciones con la API de YouTube."""
 
@@ -170,6 +242,7 @@ class YouTubeManager:
         self._setup_logging()
         self.notification = NotificationManager(self.load_notification_config())
         self.quota_exceeded = False  # Nueva bandera para control de cuota
+        self.stats = ExecutionStats()
 
     def _setup_logging(self):
         """Configura el sistema de logging con colores y formato específico."""
@@ -563,6 +636,10 @@ class YouTubeManager:
         """
         try:
             for channel in config['channels']:
+                # Guardar nombre de playlist para las estadísticas
+                if channel.get('playlist_id') and channel.get('playlist_name'):
+                    self.stats.set_playlist_name(channel['playlist_id'], channel['playlist_name'])
+
                 # Verificar si el canal tiene playlist_id
                 if not channel.get('playlist_id'):
                     self.log_and_print(
@@ -644,6 +721,12 @@ class YouTubeManager:
                 f"Video {video_id} agregado a la lista {playlist_id}",
                 Fore.GREEN
             )
+
+            # Registrar estadística
+            video_details = self._get_video_details(video_id)
+            if video_details:
+                duration = self._parse_duration(video_details['contentDetails']['duration'])
+                self.stats.add_video(playlist_id, duration)
 
             # Invalidar caché de la playlist
             self.cache.update_cache(playlist_id, None, 'playlists')
@@ -804,17 +887,33 @@ class YouTubeManager:
                                 if time_passed > time_limit:
                                     try:
                                         if not self.quota_exceeded:  # Solo intentar eliminar si no hay exceso de cuota
-                                            self.youtube.playlistItems().delete(
-                                                id=item['id']
-                                            ).execute()
+                                            # Obtener detalles del video antes de eliminarlo
+                                            video_id = item['snippet']['resourceId']['videoId']
+                                            video_details = self._get_video_details(video_id)
+                                            
+                                            if video_details and 'contentDetails' in video_details:
+                                                duration = self._parse_duration(video_details['contentDetails']['duration'])
+                                                # Registrar estadística antes de eliminar
+                                                self.stats.remove_video(playlist_id, duration)
+                                            
+                                                # Eliminar el video
+                                                self.youtube.playlistItems().delete(
+                                                    id=item['id']
+                                                ).execute()
 
-                                            videos_eliminados += 1
-                                            self.log_and_print(
-                                                f"Video {item['snippet']['title']} eliminado por antigüedad "
-                                                f"(días desde publicación: {time_passed.days} > {time_limit.days})",
-                                                Fore.GREEN
-                                            )
-                                            time.sleep(1)
+                                                videos_eliminados += 1
+                                                self.log_and_print(
+                                                    f"Video {item['snippet']['title']} eliminado por antigüedad "
+                                                    f"(días desde publicación: {time_passed.days} > {time_limit.days})",
+                                                    Fore.GREEN
+                                                )
+                                                time.sleep(1)
+                                            else:
+                                                self.log_and_print(
+                                                    f"No se pudieron obtener detalles para el video: {item['snippet']['title']}",
+                                                    Fore.YELLOW
+                                                )
+                                                continue
 
                                     except HttpError as e:
                                         error_details = e.error_details[0] if e.error_details else {}
@@ -914,6 +1013,15 @@ def main():
         # Solo ejecutar limpieza si no hay exceso de cuota
         if not manager.quota_exceeded:
             manager.cleanup_playlists()
+        
+        # Generar y mostrar resumen
+        summary = manager.stats.get_summary()
+        
+        # Mostrar en consola
+        manager.log_and_print("\n" + summary, Fore.CYAN)
+        
+        # Enviar notificación
+        manager.notification.send_notification(summary, 'info')
         
         manager.log_and_print(
             "Proceso completado" + (" (con limitación de cuota)" if manager.quota_exceeded else " exitosamente"),

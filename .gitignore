@@ -15,7 +15,7 @@
 *PRUEB*
 *.git*
 .gitignore
-
+ToDo.*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
