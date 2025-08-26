@@ -13,11 +13,13 @@ RUN apt-get update && apt-get install -y \
     cron \
     tzdata \
     procps \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copiar archivos con permisos explícitos
 COPY  requirements.txt .
 COPY  YouTubeAutoList.py .
+COPY  database_manager.py .
 COPY  entrypoint.sh .
 COPY  YouTubeAutoListConfig.json .
 COPY  YouTubeAutoListClientSecret.json .
@@ -29,17 +31,24 @@ COPY YouTubeAutoListToken.json .
 # Cambio de permisos.
 RUN chmod 644 requirements.txt && \
     chmod 644 YouTubeAutoList.py && \
+    chmod 644 database_manager.py && \
     chmod 755 entrypoint.sh && \
     chmod 644 YouTubeAutoListConfig.json && \
     chmod 644 YouTubeAutoListClientSecret.json && \
     chmod 600 YouTubeAutoListToken.json && \
     chmod 600 YouTubeAutoListNotification_config.json
 
+# Asegurar permisos para BD y logs
+RUN mkdir -p /app/db /app/logs && \
+    chmod 755 /app/db /app/logs && \
+    touch /app/db/.keep /app/logs/.keep && \
+    chmod 644 /app/db/.keep /app/logs/.keep
+
 # Instala las dependencias de Python definidas en requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt  
+RUN pip install --no-cache-dir -r requirements.txt --index-url https://pypi.org/simple
 
 # Configura el cron job con redirección de logs y ruta absoluta
-RUN echo "30 4,12,20 * * * cd /app && /usr/local/bin/python /app/YouTubeAutoList.py >> /var/log/cron.log 2>&1" > /etc/cron.d/youtube-cron && \
+RUN echo "30 4,12,20 * * * cd /app && /usr/local/bin/python /app/YouTubeAutoList.py >> /app/logs/cron.log 2>&1" > /etc/cron.d/youtube-cron && \
     chmod 0644 /etc/cron.d/youtube-cron && \
     crontab /etc/cron.d/youtube-cron
 

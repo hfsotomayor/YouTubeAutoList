@@ -34,5 +34,16 @@ echo "Iniciando monitoreo de logs..."
 touch /var/log/cron.log
 tail -f /var/log/cron.log &
 
+# Verificar y actualizar BD si es necesario
+if [ -f "/app/db/YouTubeAutoList.db" ]; then
+    sqlite3 /app/db/YouTubeAutoList.db "CREATE TABLE IF NOT EXISTS removed_videos (video_id TEXT PRIMARY KEY, channel_name TEXT, removal_date DATETIME DEFAULT CURRENT_TIMESTAMP);" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "[INFO] Base de datos verificada/actualizada correctamente"
+    else
+        echo "[ERROR] Error actualizando la base de datos"
+        exit 1
+    fi
+fi
+
 # Esperar señales mientras mantiene el contenedor ejecutándose
 wait $CRON_PID

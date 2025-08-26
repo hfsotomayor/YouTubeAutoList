@@ -16,6 +16,8 @@
 *.git*
 .gitignore
 ToDo.*
+youtubeautolist/
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

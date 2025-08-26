@@ -54,14 +54,18 @@ cat YouTubeAutoListToken.json | grep refresh_token
 
 ## Características Principales
 
+- Sistema híbrido RSS/API para máxima eficiencia
 - Autenticación OAuth 2.0 con YouTube API (3+ meses)
-- Sistema de caché para optimizar las consultas a la API
+- Sistema de base de datos SQLite para persistencia y seguimiento
+- Sistema de caché avanzado multinivel (RSS y API)
+- Sistema inteligente de gestión de cuota de YouTube API
 - Sistema de notificaciones (Telegram/Email)
 - Filtrado de videos por duración y patrones en títulos
 - Detección y exclusión automática de Shorts
 - Limpieza automática de videos antiguos
+- Sistema de respaldo automático de datos y configuraciones
 - Soporte para múltiples canales y listas de reproducción
-- Contenedorización con Docker
+- Contenedorización con Docker y persistencia de datos
 
 ## Estructura
 
@@ -69,14 +73,19 @@ cat YouTubeAutoListToken.json | grep refresh_token
 YouTubeAutoList/
 ├── YouTubeAutoList.py       # Script principal
 ├── auth_setup.py           # Script de autenticación inicial
+├── database_manager.py     # Gestor de base de datos SQLite
+├── rss_manager.py         # Gestor de feeds RSS
 ├── entrypoint.sh          # Punto de entrada para Docker
 ├── Dockerfile             # Configuración de Docker
 ├── requirements.txt       # Dependencias Python
+├── db_schema.sql         # Esquema de la base de datos
 ├── YouTubeAutoListConfig.json    # Configuración de canales
 ├── YouTubeAutoListToken.json     # Token de autenticación
-├── YouTubeAutoListNotification_config.json # Notificaciones, cuota excedida, fallos en token
-└── YouTubeAutoListClientSecret.json  # Credenciales de Google Cloud
-
+├── YouTubeAutoListNotification_config.json # Notificaciones
+├── YouTubeAutoListClientSecret.json  # Credenciales de Google Cloud
+└── persistent_data/      # Datos persistentes
+    ├── db/              # Base de datos SQLite
+    └── logs/            # Logs del sistema
 ```
 
 ## Diagrama de Flujo 
@@ -125,19 +134,62 @@ graph TD
     end
 ```
 
-### Consumo de Cuota por Canal
+### Consumo de Cuota y Optimización
 
-Para cada canal procesado, el consumo aproximado es:
-- Búsqueda inicial: 100 unidades
-- Detalles de videos: 1-2 unidades por video
-- Verificación de playlist: 1 unidad por 50 videos
-- Agregar video: 50 unidades por video
-- Eliminar video: 50 unidades por video
+El sistema utiliza un enfoque híbrido RSS/API para maximizar la eficiencia:
 
-El sistema de caché reduce el consumo total en aproximadamente un 80% al:
-- Almacenar resultados de búsqueda por 1 hora
-- Cachear contenidos de playlists por 2 horas
-- Evitar consultas repetidas de videos ya procesados
+1. **Detección Inicial vía RSS**:
+   - Obtención de videos nuevos sin consumo de cuota
+   - Filtrado inicial por títulos y fecha
+   - Caché de feeds RSS por 1 hora
+   - Sin límites de cuota API
+
+2. **Consumo de Cuota API**:
+Solo se usa la API para:
+   - Detalles de videos: 1-2 unidades por video (en lotes de 50)
+   - Verificación de playlist: 1 unidad por 50 videos
+   - Agregar video: 50 unidades por video
+   - Eliminar video: 50 unidades por video
+
+3. **Sistema de Caché Multinivel**:
+   - RSS: Detección inicial y metadatos básicos
+   - SQLite: Almacenamiento persistente de metadatos
+   - Caché en memoria: Resultados frecuentes
+   - Sistema de invalidación inteligente
+
+2. **Optimización de Llamadas**:
+   - Procesamiento en lotes de videos (hasta 50 por llamada)
+   - Verificación previa en caché antes de consultas
+   - Reutilización de datos entre sesiones
+
+3. **Gestión de Cuota**:
+   - Monitoreo continuo del consumo de cuota
+   - Notificaciones automáticas al alcanzar límites
+   - Parada segura ante exceso de cuota
+   - Estadísticas detalladas de uso
+
+El sistema híbrido reduce el consumo total de cuota en aproximadamente un 95% mediante:
+- Detección inicial vía RSS sin consumo de cuota
+- Base de datos persistente para metadatos
+- Procesamiento en lotes eficiente
+- Caché multinivel (RSS, memoria y base de datos)
+- Invalidación selectiva de caché
+
+**Ventajas del Sistema Híbrido**:
+1. **Menor Consumo de Cuota**:
+   - RSS para detección inicial sin cuota
+   - API solo para detalles específicos
+   - Reducción drástica de llamadas a la API
+
+2. **Mayor Velocidad**:
+   - RSS permite detección instantánea
+   - Sin esperas por límites de cuota
+   - Respuesta más rápida a nuevos videos
+
+3. **Mayor Robustez**:
+   - Funciona incluso con cuota agotada
+   - Redundancia en fuentes de datos
+   - Recuperación automática
 
 **Nota**: La cuota diaria gratuita de YouTube API v3 es de 10,000 unidades.
 
@@ -226,24 +278,37 @@ environment:
 pip install -r requirements.txt
 ```
 
-2. Ejecutar:
+2. Inicializar base de datos:
+```bash
+sqlite3 YouTubeAutoList.db < db_schema.sql
+```
+
+3. Ejecutar:
 ```bash
 python YouTubeAutoList.py
 ```
 
 ### Docker 
 
-Tener en cuenta que en el contexto que se ejecuta no permite volumenes ni docker compose.
+El sistema incluye un script de despliegue automatizado que maneja:
+- Respaldo de datos existentes
+- Verificación de integridad de la base de datos
+- Actualización de esquemas
+- Gestión de permisos
+- Persistencia de datos
 
-1. Construir imagen:
+1. Ejecutar script de despliegue:
 ```bash
-docker build -t owner/youtubeautolist:tag . >> LogsBuild$(date "+%Y%m%d-%H%M%S").txt
+./deply_youtubeautolist.sh
 ```
 
-2. Ejecutar:
-```bash
-docker run -d --name youtubeautolisttag --restart unless-stopped owner/youtubeautolist:tag .
-```
+El script solicitará la versión de la imagen y se encargará de:
+- Crear estructura de directorios persistentes
+- Respaldar datos del contenedor existente
+- Construir nueva imagen
+- Actualizar contenedor
+- Restaurar datos persistentes
+- Verificar permisos
 
 ## Logging
 

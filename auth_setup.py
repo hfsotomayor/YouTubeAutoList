@@ -6,52 +6,59 @@ import json
 
 SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
 
+
+def clear_oauth_session():
+    """Limpia sesiones OAuth previas."""
+    try:
+        # Eliminar token local
+        if os.path.exists('YouTubeAutoListToken.json'):
+            os.remove('YouTubeAutoListToken.json')
+            print("Token local eliminado.")
+        
+        print("\nPasos IMPORTANTES antes de continuar:")
+        print("1. Abre https://myaccount.google.com/permissions")
+        print("2. Busca y revoca acceso a 'YouTubeAutoList'")
+        print("3. Borra cookies de Google en tu navegador")
+        input("Presiona Enter cuando hayas completado estos pasos...")
+    except Exception as e:
+        print(f"Error limpiando sesión: {e}")
+
 def initial_auth():
     """Realiza la autenticación inicial y guarda el token."""
     print("=== Iniciando proceso de autenticación inicial ===")
     
     try:
-        if not os.path.exists('YouTubeAutoListClientSecret.json'):
-            raise FileNotFoundError(
-                "Archivo YouTubeAutoListClientSecret.json no encontrado. " 
-                "Descárguelo desde la consola de Google Cloud."
-            )
+        # Limpiar sesión anterior
+        clear_oauth_session()
 
-        # Si existe un token previo, lo eliminamos para forzar una nueva autenticación completa
-        if os.path.exists('YouTubeAutoListToken.json'):
-            print("Eliminando token existente para forzar nueva autenticación...")
-            os.remove('YouTubeAutoListToken.json')
-
-        # Configurar el flujo de autenticación para máxima duración
+        # Configuración para forzar nuevo token con los parámetros correctos
         flow = InstalledAppFlow.from_client_secrets_file(
             'YouTubeAutoListClientSecret.json',
-            SCOPES,
-            redirect_uri='http://localhost:8080/'
+            SCOPES
         )
-        
-        # Forzar acceso offline y prompt de consentimiento con máxima duración
-        flow.oauth2session.fetch_token_extra_kwargs = {
-            'access_type': 'offline',
-            'prompt': 'consent',
-            'include_granted_scopes': 'true',
-            'approval_prompt': 'force'  # Asegura nuevo refresh_token
-        }
 
-        # Ejecutar el servidor local para la autenticación
         credentials = flow.run_local_server(
             port=8080,
-            authorization_prompt_message="Por favor, autentícate en el navegador...",
-            success_message="Autenticación completada! Puedes cerrar esta ventana."
+            authorization_prompt_message="Esperando autenticación...",
+            success_message="¡Autorización exitosa!",
+            open_browser=True,
+            # Parámetros de autorización corregidos
+            authorization_prompt_kwargs={
+                'access_type': 'offline',
+                'prompt': 'consent select_account',
+                'include_granted_scopes': 'true'
+            }
         )
-        
-        # Verificar que tenemos refresh_token
+
+        # Verificación estricta del refresh_token
         if not credentials.refresh_token:
             raise ValueError(
-                "No se pudo obtener el refresh_token. "
-                "Asegúrate de haber revocado accesos previos en "
-                "https://myaccount.google.com/permissions"
+                "\n¡ERROR! No se obtuvo refresh_token.\n"
+                "1. Asegúrate de haber revocado el acceso en https://myaccount.google.com/permissions\n"
+                "2. Borra las cookies de Google en tu navegador\n"
+                "3. Ejecuta el script nuevamente"
             )
-        
+
         # Preparar datos del token
         token_data = {
             'token': credentials.token,
