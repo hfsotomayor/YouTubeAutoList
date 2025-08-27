@@ -56,26 +56,48 @@ class YouTubeRSSManager:
             Lista de videos que cumplen con los criterios
         """
         channel_id = channel_config['channel_id']
+        channel_name = channel_config.get('channel_name', channel_id)
         hours_limit = channel_config.get('hours_limit', 8)
         title_pattern = channel_config.get('title_pattern')
 
+        self.log_and_print(
+            f"=== Iniciando obtención RSS para canal {channel_name} ===",
+            Fore.CYAN,
+            logging.INFO
+        )
+
         # Verificar caché
         if self._is_cache_valid(channel_id):
+            self.log_and_print(
+                f"Usando caché RSS para canal {channel_name} (válido por {self._cache_duration//60} minutos)",
+                Fore.GREEN,
+                logging.INFO
+            )
             return self._cache[channel_id]['videos']
 
         try:
             feed_url = self._get_channel_feed_url(channel_id)
+            self.log_and_print(
+                f"Obteniendo feed RSS para {channel_name}...",
+                Fore.CYAN,
+                logging.INFO
+            )
             feed = feedparser.parse(feed_url)
 
             if feed.get('bozo_exception'):
                 self.log_and_print(
-                    f"Error al obtener feed RSS para {channel_id}: {feed.bozo_exception}",
+                    f"Error al obtener feed RSS para {channel_name}: {feed.bozo_exception}",
                     Fore.RED,
                     logging.ERROR
                 )
                 return []
 
             time_limit = datetime.utcnow() - timedelta(hours=hours_limit)
+            self.log_and_print(
+                f"Límite de tiempo para {channel_name}: {hours_limit} horas ({time_limit.strftime('%Y-%m-%d %H:%M:%S')})",
+                Fore.CYAN,
+                logging.INFO
+            )
             videos = []
 
             for entry in feed.entries:
@@ -87,9 +109,31 @@ class YouTubeRSSManager:
                     if published < time_limit:
                         continue
 
+                    # Registrar video encontrado
+                    self.log_and_print(
+                        f"Video encontrado en RSS:\n"
+                        f"  - Título: {entry.title}\n"
+                        f"  - ID: {video_id}\n"
+                        f"  - Fecha: {published.strftime('%Y-%m-%d %H:%M:%S')}",
+                        Fore.WHITE,
+                        logging.DEBUG
+                    )
+
                     # Filtrar por patrón de título si existe
-                    if title_pattern and not re.search(title_pattern, entry.title, re.IGNORECASE):
-                        continue
+                    if title_pattern:
+                        if not re.search(title_pattern, entry.title, re.IGNORECASE):
+                            self.log_and_print(
+                                f"Video excluido - No coincide con patrón: {title_pattern}",
+                                Fore.YELLOW,
+                                logging.INFO
+                            )
+                            continue
+                        else:
+                            self.log_and_print(
+                                f"Video aceptado - Coincide con patrón: {title_pattern}",
+                                Fore.GREEN,
+                                logging.INFO
+                            )
 
                     video_info = {
                         'id': video_id,
@@ -99,6 +143,11 @@ class YouTubeRSSManager:
                         'description': entry.summary
                     }
                     videos.append(video_info)
+                    self.log_and_print(
+                        f"Video agregado a la lista de procesamiento",
+                        Fore.GREEN,
+                        logging.INFO
+                    )
 
                 except (AttributeError, KeyError) as e:
                     self.log_and_print(
@@ -109,11 +158,16 @@ class YouTubeRSSManager:
                     continue
 
             self._cache_videos(channel_id, videos)
+            self.log_and_print(
+                f"=== RSS: Encontrados {len(videos)} videos válidos para {channel_name} ===",
+                Fore.GREEN,
+                logging.INFO
+            )
             return videos
 
         except Exception as e:
             self.log_and_print(
-                f"Error obteniendo videos RSS para {channel_id}: {str(e)}",
+                f"Error obteniendo videos RSS para {channel_name}: {str(e)}",
                 Fore.RED,
                 logging.ERROR
             )

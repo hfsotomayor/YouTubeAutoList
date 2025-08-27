@@ -97,12 +97,31 @@ graph TD
     C --> D[authenticate]
     D --> E[load_config]
     E --> F[manage_playlist]
-    F --> G[get_channel_videos<br/>quota: ~102/canal]
-    G --> H[_video_matches_criteria<br/>quota: ~3/video]
-    H --> I[_parse_duration]
-    F --> J[_get_playlist_items<br/>quota: ~1/50 items]
-    F --> K[_video_in_playlist]
-    F --> L[_add_to_playlist<br/>quota: 50/video]
+
+    %% Sistema Híbrido RSS/API
+    subgraph "Sistema RSS"
+        RSS[RSSManager]
+        RC[RSS Cache]
+        RF[RSS Feed]
+        RSS --> RC
+        RSS --> RF
+        F --> RSS
+        RSS --> RV[get_recent_videos]
+        RV --> FT[Filtro por Título]
+        RV --> FD[Filtro por Fecha]
+    end
+
+    %% Sistema API
+    subgraph "Sistema API"
+        F --> G[get_channel_videos<br/>quota: ~102/canal]
+        G --> H[_video_matches_criteria<br/>quota: ~3/video]
+        H --> I[_parse_duration]
+        F --> J[_get_playlist_items<br/>quota: ~1/50 items]
+        F --> K[_video_in_playlist]
+        F --> L[_add_to_playlist<br/>quota: 50/video]
+    end
+
+    %% Sistema de Limpieza
     A --> M[cleanup_playlists]
     M --> N[_get_playlist_items<br/>quota: ~1/50 items]
     
@@ -117,6 +136,16 @@ graph TD
         TE --> Y[TokenExpiredException]
         X & Y --> Z[Notificación<br/>Telegram/Email]
         Z --> W[sys.exit]
+    end
+
+    %% Sistema de Caché Multinivel
+    subgraph "Caché Multinivel"
+        DB[(SQLite DB)]
+        MC[Memoria Cache]
+        RSS --> MC
+        G --> MC
+        MC --> DB
+        DB --> MC
     end
 
     subgraph "Autenticación Extendida"
@@ -315,6 +344,48 @@ El script solicitará la versión de la imagen y se encargará de:
 Los logs se guardan en:
 - `logs/YouTubeAutoList.log`: Logs de la aplicación
 - `logs/cron.log`: Logs de las ejecuciones programadas
+
+### Estructura de Logs
+
+1. **Operaciones RSS**:
+   ```
+   === Iniciando obtención RSS para canal [nombre_canal] ===
+   Obteniendo feed RSS para [nombre_canal]...
+   Límite de tiempo: 8 horas (2025-08-27 10:00:00)
+   Video encontrado en RSS:
+     - Título: [título_video]
+     - ID: [video_id]
+     - Fecha: [fecha_publicación]
+   Video aceptado/excluido - [razón]
+   === RSS: Encontrados X videos válidos para [nombre_canal] ===
+   ```
+
+2. **Caché RSS**:
+   ```
+   Usando caché RSS para canal [nombre_canal] (válido por 60 minutos)
+   Actualizando caché RSS para [nombre_canal]
+   ```
+
+3. **Operaciones API**:
+   ```
+   Verificando detalles API para video [video_id]
+   Consumo de cuota: [unidades] unidades ([operación])
+   ```
+
+4. **Sistema Híbrido**:
+   ```
+   === Procesamiento Híbrido RSS/API ===
+   Videos detectados vía RSS: [número]
+   Videos verificados vía API: [número]
+   Videos agregados a playlist: [número]
+   ```
+
+5. **Errores y Advertencias**:
+   ```
+   [ERROR] Error al obtener feed RSS: [detalle]
+   [WARNING] No se pudo verificar duración vía API
+   [INFO] Usando datos en caché
+   ```
 
 ## Commits Convencionales
 
