@@ -4,12 +4,22 @@ Reduce el consumo de cuota de API mediante el uso de RSS para detección inicial
 """
 
 import feedparser
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, NamedTuple
 from datetime import datetime, timedelta
 import re
 import logging
 from colorama import Fore
 import time
+import requests
+
+class YouTubeVideoEntry(NamedTuple):
+    """Estructura para almacenar información básica de un video de YouTube."""
+    yt_videoid: str
+    title: str
+    published: datetime
+    author: str
+    description: str
+
 
 class YouTubeRSSManager:
     """Gestiona la obtención de videos a través de feeds RSS de YouTube."""
@@ -18,169 +28,106 @@ class YouTubeRSSManager:
         self.logger = logger or logging.getLogger(__name__)
         self._cache = {}
         self._cache_duration = 3600  # 1 hora
+        self._last_cache_update = {}
 
-    def log_and_print(self, message: str, color: str = Fore.WHITE, level: int = logging.INFO):
-        """Registra un mensaje en el log y lo imprime en la consola."""
-        self.logger.log(level, message)
-        print(f"{color}{message}{Fore.RESET}")
-
-    def _get_channel_feed_url(self, channel_id: str) -> str:
-        """Genera la URL del feed RSS para un canal de YouTube."""
-        return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-
-    def _is_cache_valid(self, channel_id: str) -> bool:
-        """Verifica si el caché para un canal específico es válido."""
-        if channel_id not in self._cache:
-            return False
-        cache_time = self._cache[channel_id]['timestamp']
-        return (time.time() - cache_time) < self._cache_duration
-
-    def _cache_videos(self, channel_id: str, videos: List[Dict]):
-        """Almacena videos en caché."""
-        self._cache[channel_id] = {
-            'videos': videos,
-            'timestamp': time.time()
-        }
-
-    def get_recent_videos(self, channel_config: Dict) -> List[Dict]:
-        """
-        Obtiene videos recientes de un canal usando su feed RSS.
+    def get_channel_feed(self, channel_id: str) -> List[YouTubeVideoEntry]:
+        """Obtiene los videos más recientes de un canal a través de su feed RSS."""
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
         
-        Args:
-            channel_config: Diccionario con la configuración del canal
-                - channel_id: ID del canal
-                - hours_limit: Límite de horas para videos (default: 8)
-                - title_pattern: Patrón regex para filtrar títulos
-        
-        Returns:
-            Lista de videos que cumplen con los criterios
-        """
-        channel_id = channel_config['channel_id']
-        channel_name = channel_config.get('channel_name', channel_id)
-        hours_limit = channel_config.get('hours_limit', 8)
-        title_pattern = channel_config.get('title_pattern')
-
-        self.log_and_print(
-            f"=== Iniciando obtención RSS para canal {channel_name} ===",
-            Fore.CYAN,
-            logging.INFO
-        )
-
-        # Verificar caché
-        if self._is_cache_valid(channel_id):
-            self.log_and_print(
-                f"Usando caché RSS para canal {channel_name} (válido por {self._cache_duration//60} minutos)",
-                Fore.GREEN,
-                logging.INFO
-            )
-            return self._cache[channel_id]['videos']
-
         try:
-            feed_url = self._get_channel_feed_url(channel_id)
-            self.log_and_print(
-                f"Obteniendo feed RSS para {channel_name}...",
-                Fore.CYAN,
-                logging.INFO
-            )
-            feed = feedparser.parse(feed_url)
-
+            # Verificar caché
+            if self._is_cache_valid(channel_id):
+                self.logger.info(f"RSS: Usando caché para canal {channel_id}")
+                return self._cache[channel_id]
+            
+            # Usar requests para obtener el feed con timeout
+            response = requests.get(feed_url, timeout=10)
+            response.raise_for_status()
+            
+            # Parsear el feed RSS
+            feed = feedparser.parse(response.text)
+            
             if feed.get('bozo_exception'):
-                self.log_and_print(
-                    f"Error al obtener feed RSS para {channel_name}: {feed.bozo_exception}",
-                    Fore.RED,
-                    logging.ERROR
-                )
+                self.logger.error(f"Error parseando feed RSS: {feed.bozo_exception}")
                 return []
-
-            time_limit = datetime.utcnow() - timedelta(hours=hours_limit)
-            self.log_and_print(
-                f"Límite de tiempo para {channel_name}: {hours_limit} horas ({time_limit.strftime('%Y-%m-%d %H:%M:%S')})",
-                Fore.CYAN,
-                logging.INFO
-            )
-            videos = []
-
+                
+            entries = []
             for entry in feed.entries:
                 try:
                     # Extraer video ID de la URL
-                    video_id = re.search(r'video_id=([^&]+)', entry.id).group(1)
-                    published = datetime(*entry.published_parsed[:6])
-
-                    if published < time_limit:
+                    video_id_match = re.search(r'yt:video:([^<]+)', entry.id)
+                    if not video_id_match:
                         continue
-
-                    # Registrar video encontrado
-                    self.log_and_print(
-                        f"Video encontrado en RSS:\n"
-                        f"  - Título: {entry.title}\n"
-                        f"  - ID: {video_id}\n"
-                        f"  - Fecha: {published.strftime('%Y-%m-%d %H:%M:%S')}",
-                        Fore.WHITE,
-                        logging.DEBUG
+                        
+                    video_id = video_id_match.group(1)
+                    published = datetime(*entry.published_parsed[:6])
+                    
+                    video_entry = YouTubeVideoEntry(
+                        yt_videoid=video_id,
+                        title=entry.title,
+                        published=published,
+                        author=entry.author,
+                        description=entry.get('summary', '')
                     )
-
-                    # Filtrar por patrón de título si existe
-                    if title_pattern:
-                        if not re.search(title_pattern, entry.title, re.IGNORECASE):
-                            self.log_and_print(
-                                f"Video excluido - No coincide con patrón: {title_pattern}",
-                                Fore.YELLOW,
-                                logging.INFO
-                            )
-                            continue
-                        else:
-                            self.log_and_print(
-                                f"Video aceptado - Coincide con patrón: {title_pattern}",
-                                Fore.GREEN,
-                                logging.INFO
-                            )
-
-                    video_info = {
-                        'id': video_id,
-                        'title': entry.title,
-                        'published_at': published.isoformat(),
-                        'channel_title': entry.author,
-                        'description': entry.summary
-                    }
-                    videos.append(video_info)
-                    self.log_and_print(
-                        f"Video agregado a la lista de procesamiento",
-                        Fore.GREEN,
-                        logging.INFO
-                    )
-
-                except (AttributeError, KeyError) as e:
-                    self.log_and_print(
-                        f"Error procesando entrada RSS: {str(e)}",
-                        Fore.YELLOW,
-                        logging.WARNING
-                    )
+                    entries.append(video_entry)
+                    
+                except (AttributeError, KeyError, ValueError) as e:
+                    self.logger.warning(f"Error procesando entrada RSS: {str(e)}")
                     continue
-
-            self._cache_videos(channel_id, videos)
-            self.log_and_print(
-                f"=== RSS: Encontrados {len(videos)} videos válidos para {channel_name} ===",
-                Fore.GREEN,
-                logging.INFO
-            )
-            return videos
-
+            
+            # Guardar en caché
+            self._cache[channel_id] = entries
+            self._last_cache_update[channel_id] = time.time()
+            
+            self.logger.info(f"RSS: Obtenidos {len(entries)} videos para canal {channel_id}")
+            return entries
+            
+        except requests.RequestException as e:
+            self.logger.error(f"Error obteniendo feed RSS para {channel_id}: {str(e)}")
+            return []
         except Exception as e:
-            self.log_and_print(
-                f"Error obteniendo videos RSS para {channel_name}: {str(e)}",
-                Fore.RED,
-                logging.ERROR
-            )
+            self.logger.error(f"Error inesperado en RSS: {str(e)}")
             return []
 
-    def clear_cache(self, channel_id: Optional[str] = None):
-        """
-        Limpia el caché de videos.
+    def _is_cache_valid(self, channel_id: str) -> bool:
+        """Verifica si el caché es válido."""
+        if channel_id not in self._cache:
+            return False
         
-        Args:
-            channel_id: ID del canal específico a limpiar. Si es None, limpia todo el caché.
-        """
-        if channel_id:
-            self._cache.pop(channel_id, None)
-        else:
-            self._cache.clear()
+        if channel_id not in self._last_cache_update:
+            return False
+        
+        elapsed = time.time() - self._last_cache_update[channel_id]
+        return elapsed < self._cache_duration
+
+    def clear_cache(self):
+        """Limpia el caché de feeds RSS."""
+        self._cache.clear()
+        self._last_cache_update.clear()
+
+
+class RSSManager:
+    """Clase alternativa para compatibilidad."""
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        
+    def parse_feed(self, feed_url: str) -> Dict:
+        """Parsea un feed RSS y devuelve su contenido."""
+        try:
+            feed = feedparser.parse(feed_url)
+            if feed.get('bozo_exception'):
+                self.logger.error(f"Error parseando feed {feed_url}: {feed['bozo_exception']}")
+                return {}
+            return feed
+        except Exception as e:
+            self.logger.error(f"Error al procesar feed {feed_url}: {str(e)}")
+            return {}
+    
+    def get_feed_entries(self, feed_url: str) -> List[Dict]:
+        """Obtiene las entradas de un feed RSS."""
+        feed = self.parse_feed(feed_url)
+        return feed.get('entries', [])
+    
+    def get_channel_feed_url(self, channel_id: str) -> str:
+        """Genera la URL del feed RSS para un canal de YouTube."""
+        return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"

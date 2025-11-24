@@ -173,22 +173,31 @@ class ExecutionStats:
     """Mantiene estadísticas de la ejecución."""
     def __init__(self):
         self.stats = {
-            'added': {},      # videos añadidos por playlist
-            'removed': {},    # videos eliminados por playlist
-            'duration': {     # duración total por playlist
+            'added': {},
+            'removed': {},
+            'duration': {
                 'added': {},
                 'removed': {}
             },
-            'playlist_names': {},  # mapeo de IDs a nombres
-            'channel_stats': {},  # estadísticas por canal
-            'video_origins': {},  # mapeo de videos eliminados a su canal original
-            'quota_usage': {      # uso de cuota
+            'playlist_names': {},
+            'quota_usage': {
                 'search': 0,
                 'video_details': 0,
                 'playlist_items': 0,
                 'add_video': 0,
                 'delete_video': 0
-            }
+            },
+            'quota_saved': {  # Nuevo contador para cuota ahorrada
+                'search_operations': 0,
+                'total_saved': 0
+            },
+            'rss_stats': {    # Estadísticas específicas de RSS
+                'videos_from_rss': 0,
+                'videos_from_api': 0,
+                'failed_rss_feeds': 0
+            },
+            'channel_stats': {},  # Añadir inicialización
+            'video_origins': {}   # Añadir inicialización
         }
         self.totals = {
             'videos_added': 0,
@@ -232,6 +241,11 @@ class ExecutionStats:
     def add_quota_usage(self, operation: str, units: int):
         """Registra uso de cuota."""
         self.stats['quota_usage'][operation] += units
+
+    def add_quota_saved(self, operation: str, amount: int):
+        """Registra cuota ahorrada por usar RSS."""
+        self.stats['quota_saved'][operation] = self.stats['quota_saved'].get(operation, 0) + amount
+        self.stats['quota_saved']['total_saved'] += amount
 
     def format_duration(self, seconds: int) -> str:
         """Formatea la duración en formato legible."""
@@ -284,6 +298,16 @@ class ExecutionStats:
             f"Total cuota utilizada: {total_quota} unidades"
         ])
 
+        # Agregar sección de ahorro de cuota
+        summary.extend([
+            "\n=== Ahorro de Cuota con RSS ===",
+            f"Operaciones de búsqueda evitadas: {self.stats['quota_saved']['search_operations']}",
+            f"Cuota total ahorrada: {self.stats['quota_saved']['total_saved']} unidades",
+            f"Videos obtenidos via RSS: {self.stats['rss_stats']['videos_from_rss']}",
+            f"Videos obtenidos via API: {self.stats['rss_stats']['videos_from_api']}",
+            f"Feeds RSS fallidos: {self.stats['rss_stats']['failed_rss_feeds']}"
+        ])
+
         return "\n".join(summary)
 
 
@@ -298,6 +322,76 @@ class YouTubeManager:
         self.quota_exceeded = False
         self.stats = ExecutionStats()
         self.db = DatabaseManager(BASE_DIR)
+        self.logger = logging.getLogger(__name__)
+        
+        # Importación mejorada del módulo rss_manager con logging detallado
+        self.rss_manager = self._import_rss_manager()
+
+    def _import_rss_manager(self):
+        """Intenta importar el módulo RSS Manager con manejo detallado de errores."""
+        try:
+            # Verificar que el archivo existe
+            rss_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rss_manager.py')
+            
+            if not os.path.exists(rss_file):
+                self.log_and_print(
+                    f"ADVERTENCIA: Archivo rss_manager.py no encontrado en {rss_file}. "
+                    f"Funcionando en modo solo API.",
+                    Fore.YELLOW,
+                    logging.WARNING
+                )
+                return None
+            
+            # Agregar el directorio actual a sys.path si no está
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            if app_dir not in sys.path:
+                sys.path.insert(0, app_dir)
+            
+            # Intentar importar
+            from rss_manager import YouTubeRSSManager
+            
+            self.log_and_print(
+                "Módulo RSS Manager importado correctamente",
+                Fore.GREEN,
+                logging.INFO
+            )
+            
+            return YouTubeRSSManager(self.logger)
+            
+        except ImportError as import_error:
+            self.log_and_print(
+                f"ERROR importando RSS Manager - Tipo: ImportError\n"
+                f"  Detalle: {str(import_error)}\n"
+                f"  Ruta buscada: {app_dir if 'app_dir' in locals() else 'desconocida'}\n"
+                f"  sys.path: {sys.path[:3]}...\n"
+                f"  Funcionando en modo solo API",
+                Fore.YELLOW,
+                logging.WARNING
+            )
+            return None
+            
+        except AttributeError as attr_error:
+            self.log_and_print(
+                f"ERROR importando RSS Manager - Tipo: AttributeError\n"
+                f"  Detalle: {str(attr_error)}\n"
+                f"  Es posible que YouTubeRSSManager no esté definido en rss_manager.py\n"
+                f"  Funcionando en modo solo API",
+                Fore.YELLOW,
+                logging.WARNING
+            )
+            return None
+            
+        except Exception as e:
+            self.log_and_print(
+                f"ERROR inesperado importando RSS Manager\n"
+                f"  Tipo: {type(e).__name__}\n"
+                f"  Detalle: {str(e)}\n"
+                f"  Módulo: {e.__class__.__module__}\n"
+                f"  Funcionando en modo solo API",
+                Fore.YELLOW,
+                logging.WARNING
+            )
+            return None
 
     def load_notification_config(self) -> Dict:
         """Carga la configuración de notificaciones."""
@@ -314,23 +408,46 @@ class YouTubeManager:
 
     def _setup_logging(self):
         """Configura el sistema de logging con colores y formato específico."""
+        # Crear directorio de logs si no existe
+        if not os.path.exists(LOGS_DIR):
+            os.makedirs(LOGS_DIR)
+
+        # Generar nombre del archivo de log con la fecha actual
+        log_filename = datetime.now().strftime('YouTubeAutoList_%Y%m%d.log')
+        log_filepath = os.path.join(LOGS_DIR, log_filename)
+
+        # Configurar el logger
         logging.basicConfig(
-            filename=LOG_FILE,
+            filename=log_filepath,
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
 
-    def log_and_print(self, message: str, color: str = Fore.WHITE, level: int = logging.INFO):
-        """
-        Registra un mensaje en el log y lo muestra en consola con color.
+        # Registrar inicio de nueva sesión
+        logging.info("=== Iniciando nueva sesión de logging ===")
+        
+        # Limpiar logs antiguos (mantener solo últimos 30 días)
+        self._cleanup_old_logs()
 
-        Args:
-            message: Mensaje a registrar
-            color: Color para la consola (usando Fore de colorama)
-            level: Nivel de logging
-        """
-        logging.log(level, message)
-        print(f"{color}{message}{Fore.RESET}")
+        self.logger = logging.getLogger(__name__)
+
+    def _cleanup_old_logs(self):
+        """Limpia archivos de log más antiguos que 30 días."""
+        try:
+            now = datetime.now()
+            for filename in os.listdir(LOGS_DIR):
+                if filename.startswith('YouTubeAutoList_') and filename.endswith('.log'):
+                    filepath = os.path.join(LOGS_DIR, filename)
+                    file_date_str = filename[15:23]  # Extraer YYYYMMDD del nombre
+                    try:
+                        file_date = datetime.strptime(file_date_str, '%Y%m%d')
+                        if (now - file_date).days > 30:
+                            os.remove(filepath)
+                            logging.info(f"Log antiguo eliminado: {filename}")
+                    except ValueError:
+                        continue
+        except Exception as e:
+            logging.error(f"Error limpiando logs antiguos: {str(e)}")
 
     def check_internet_connection(self) -> bool:
         """Verifica la conexión a Internet."""
@@ -460,6 +577,18 @@ class YouTubeManager:
                 logging.ERROR
             )
             return {"channels": []}
+
+    def log_and_print(self, message: str, color: str = Fore.WHITE, level: int = logging.INFO):
+        """
+        Registra un mensaje en el log y lo muestra en consola con color.
+
+        Args:
+            message: Mensaje a registrar
+            color: Color para la consola (usando Fore de colorama)
+            level: Nivel de logging
+        """
+        logging.log(level, message)
+        print(f"{color}{message}{Fore.RESET}")
 
     def _check_token_error(self, error: Exception):
         """Verifica si el error está relacionado con el token."""
@@ -602,6 +731,9 @@ class YouTubeManager:
 
             if response['items']:
                 video_data = response['items'][0]
+                # Asegurarse de que channelTitle esté presente
+                if 'snippet' in video_data and 'channelTitle' not in video_data['snippet']:
+                    video_data['snippet']['channelTitle'] = 'Unknown Channel'
                 # Guardar en caché para futuras consultas
                 self.db.cache_video(video_data, CACHE_DURATION)
                 return video_data
@@ -644,7 +776,52 @@ class YouTubeManager:
             )
 
     def get_channel_videos(self, channel_config: Dict) -> List[Dict]:
-        """Obtiene videos con optimización de cuota"""
+        """Obtiene videos usando primero RSS y luego API si es necesario."""
+        try:
+            videos = []
+            channel_id = channel_config['channel_id']
+            
+            # 1. Intentar obtener videos via RSS si está disponible
+            if self.rss_manager:
+                try:
+                    rss_entries = self.rss_manager.get_channel_feed(channel_id)
+                    if rss_entries:
+                        self.stats.stats['rss_stats']['videos_from_rss'] += len(rss_entries)
+                        self.stats.add_quota_saved('search_operations', 100)
+                        
+                        for entry in rss_entries:
+                            video_id = entry.yt_videoid
+                            if self.db.get_cached_video(video_id):
+                                self.stats.add_quota_saved('video_details', 1)
+                                continue
+                                
+                            video_details = self._get_video_details(video_id)
+                            if video_details:
+                                videos.append(video_details)
+                        
+                        return videos
+                except Exception as e:
+                    self.log_and_print(
+                        f"Error en RSS, usando API como fallback: {str(e)}",
+                        Fore.YELLOW,
+                        logging.WARNING
+                    )
+                
+            # 2. Si RSS no está disponible o falla, usar API
+            self.stats.stats['rss_stats']['failed_rss_feeds'] += 1
+            self.stats.stats['rss_stats']['videos_from_api'] += 1
+            return self._get_videos_via_api(channel_config)
+                
+        except Exception as e:
+            self.log_and_print(
+                f"Error obteniendo videos: {str(e)}",
+                Fore.RED,
+                logging.ERROR
+            )
+            return []
+
+    def _get_videos_via_api(self, channel_config: Dict) -> List[Dict]:
+        """Obtiene videos de un canal usando la API de YouTube."""
         channel_id = channel_config['channel_id']
 
         if self.cache.is_cache_valid(channel_id, 'videos'):
