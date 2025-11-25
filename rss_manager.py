@@ -60,7 +60,13 @@ class YouTubeRSSManager:
                         continue
                         
                     video_id = video_id_match.group(1)
-                    published = datetime(*entry.published_parsed[:6])
+                    
+                    # Parsear fecha de publicación
+                    try:
+                        published = datetime(*entry.published_parsed[:6])
+                    except (TypeError, ValueError):
+                        self.logger.warning(f"No se pudo parsear fecha para video {video_id}")
+                        continue
                     
                     video_entry = YouTubeVideoEntry(
                         yt_videoid=video_id,
@@ -107,6 +113,7 @@ class YouTubeRSSManager:
 
 
 class RSSManager:
+    
     """Clase alternativa para compatibilidad."""
     def __init__(self):
         self.logger = logging.getLogger(__name__)

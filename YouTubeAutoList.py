@@ -786,20 +786,46 @@ class YouTubeManager:
                 try:
                     rss_entries = self.rss_manager.get_channel_feed(channel_id)
                     if rss_entries:
-                        self.stats.stats['rss_stats']['videos_from_rss'] += len(rss_entries)
+                        # Filtrar videos por fecha (hours_limit)
+                        hours_limit = channel_config.get('hours_limit', 8)
+                        cutoff_time = datetime.utcnow() - timedelta(hours=hours_limit)
+                        
+                        filtered_entries = [
+                            entry for entry in rss_entries 
+                            if entry.published > cutoff_time
+                        ]
+                        
+                        self.log_and_print(
+                            f"RSS: {len(rss_entries)} videos obtenidos, {len(filtered_entries)} después de filtrar por fecha",
+                            Fore.CYAN
+                        )
+                        
+                        self.stats.stats['rss_stats']['videos_from_rss'] += len(filtered_entries)
                         self.stats.add_quota_saved('search_operations', 100)
                         
-                        for entry in rss_entries:
+                        for entry in filtered_entries:
                             video_id = entry.yt_videoid
-                            if self.db.get_cached_video(video_id):
+                            
+                            # Verificar si ya está en caché
+                            cached_video = self.db.get_cached_video(video_id)
+                            if cached_video:
                                 self.stats.add_quota_saved('video_details', 1)
+                                # Validar criterios incluso para videos en caché
+                                if self._video_matches_criteria(cached_video, channel_config):
+                                    videos.append(cached_video)
                                 continue
-                                
+                            
+                            # Obtener detalles completos del video para validar criterios
                             video_details = self._get_video_details(video_id)
                             if video_details:
-                                videos.append(video_details)
+                                # Validar que cumple con los criterios
+                                if self._video_matches_criteria(video_details, channel_config):
+                                    videos.append(video_details)
+                                    self.stats.update_channel_stats(channel_config['channel_name'], 'added')
                         
-                        return videos
+                        if videos:
+                            return videos
+                        
                 except Exception as e:
                     self.log_and_print(
                         f"Error en RSS, usando API como fallback: {str(e)}",

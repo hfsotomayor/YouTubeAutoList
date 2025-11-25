@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
 COPY  requirements.txt .
 COPY  YouTubeAutoList.py .
 COPY  database_manager.py .
+COPY  rss_manager.py .
 COPY  entrypoint.sh .
 COPY  YouTubeAutoListConfig.json .
 COPY  YouTubeAutoListClientSecret.json .
@@ -32,6 +33,7 @@ COPY YouTubeAutoListToken.json .
 RUN chmod 644 requirements.txt && \
     chmod 644 YouTubeAutoList.py && \
     chmod 644 database_manager.py && \
+    chmod 644 rss_manager.py && \
     chmod 755 entrypoint.sh && \
     chmod 644 YouTubeAutoListConfig.json && \
     chmod 644 YouTubeAutoListClientSecret.json && \
